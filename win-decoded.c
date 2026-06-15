@@ -129,6 +129,17 @@ static DWORD _CheckMenuItem(PMENU pMenu, UINT uIDCheckItem, UINT uCheck)
 }
 
 // @implemented
+static BOOL xxxHiliteMenuItem(PWND pWnd, PMENU pMenu, UINT uItemHilite, UINT uHilite)
+{
+    if (!(uHilite & MF_BYPOSITION))
+        uItemHilite = UT_FindTopLevelMenuIndex(pMenu, uItemHilite);
+    if (!(pMenu->fFlags & MNF_POPUP))
+        xxxMNRecomputeBarIfNeeded(pWnd, pMenu);
+    xxxMNInvertItem(0, pMenu, uItemHilite, pWnd, uHilite & MF_HILITE);
+    return TRUE;
+}
+
+// @implemented
 DWORD NTAPI NtUserCheckMenuItem(HMENU hMenu, UINT uIDCheckItem, UINT uCheck)
 {
     PMENU pMenu;
@@ -340,4 +351,39 @@ UINT NTAPI NtUserGetMenuIndex(HMENU hMenu, HMENU hSubMenu)
 Cleanup:
     LeaveCrit();
     return ret;
+}
+
+// @implemented
+HMENU NTAPI NtUserGetSystemMenu(HWND hWnd, BOOL bRevert)
+{
+    PWND pWnd;
+    PMENU pSysMenu;
+    HMENU hSysMenu;
+    TL tl;
+
+    EnterCrit();
+
+    pWnd = ValidateHwnd(hWnd);
+    if (pWnd)
+    {
+        tl.next = gptiCurrent->ptl;
+        gptiCurrent->ptl = &tl;
+        tl.pobj = pWnd;
+        ++pWnd->head.cLockObj;
+
+        pSysMenu = xxxGetSystemMenu(pWnd, bRevert);
+        if (pSysMenu)
+            hSysMenu = (HMENU)pSysMenu->head.head.h;
+        else
+            hSysMenu = NULL;
+
+        ThreadUnlock1();
+    }
+    else
+    {
+        hSysMenu = NULL;
+    }
+
+    LeaveCrit();
+    return hSysMenu;
 }
