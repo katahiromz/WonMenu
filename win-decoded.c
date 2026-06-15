@@ -23,22 +23,131 @@ static void UnlockWndMenu(PWND pWnd, PMENU *ppMenu)
 }
 
 // @implemented
-static UINT UT_FindTopLevelMenuIndex(PMENU pMenu, UINT uItem)
+static void LockPopupMenu(PPOPUPMENU pPopupMenu, PMENU *ppMenu, PMENU pMenu)
 {
-    PMENU pFoundMenu = NULL;
+    UnlockPopupMenuWindow(*ppMenu, pPopupMenu->spwndNotify);
+    if (pMenu)
+        HMAssignmentLock((PVOID *)&pMenu->spwndNotify, pPopupMenu->spwndNotify);
+    HMAssignmentLock((PVOID *)ppMenu, pMenu);
+}
 
-    PITEM pItem = MNLookUpItem(pMenu, uItem, FALSE, &pFoundMenu);
-    if (!pItem)
-        return (UINT)-1;
+// @implemented
+static BOOL ExitMenuLoop(PMENUSTATE pMenuState, PPOPUPMENU pPopupMenu)
+{
+    return !pMenuState->fInsideMenuLoop || pPopupMenu->fDelayedFree;
+}
 
-    PITEM pTopItem = pMenu->rgItems;
-    for (UINT i = 0; i < pMenu->cItems; ++i, ++pTopItem)
+// @implemented
+static void MakeMenuRtoL(PMENU pMenu, BOOL bRtoL)
+{
+    if (bRtoL)
+        pMenu->fFlags |= MNF_RTOL;
+    else
+        pMenu->fFlags &= ~MNF_RTOL;
+
+    for (INT iItem = 0; iItem < (INT)pMenu->cItems; ++iItem)
     {
-        if (pTopItem->spSubMenu == pFoundMenu)
-            return i;
+        PITEM pItem = &pMenu->rgItems[iItem];
+
+        if (bRtoL)
+            pItem->fType |= (MFT_RIGHTORDER | MFT_RIGHTJUSTIFY);
+        else
+            pItem->fType &= ~(MFT_RIGHTORDER | MFT_RIGHTJUSTIFY);
+
+        if (pItem->spSubMenu)
+            MakeMenuRtoL(pItem->spSubMenu, bRtoL);
+    }
+}
+
+/*
+ * ItemContainingSubMenu
+ *
+ * pMenu の直下のアイテムを末尾から先頭へ逆順に走査し、
+ * pSubMenu に対応するアイテムのインデックスを返す。
+ *
+ * 一致の判定は2段階：
+ *   1. spSubMenu == NULL かつ wID == (UINT)pSubMenu  → 葉アイテムのIDが一致
+ *   2. spSubMenu == pSubMenu                         → サブメニューが直接一致
+ *   3. spSubMenu != NULL の場合は再帰的に子を検索し、見つかればそのインデックスを返す
+ *
+ * 引数:
+ *   pMenu    - 検索対象の親メニュー
+ *   pSubMenu - 探すサブメニュー（またはコマンドIDとして解釈される値）
+ *
+ * 戻り値:
+ *   見つかったアイテムのインデックス（0始まり）。
+ *   見つからなかった場合は -1。
+ */
+static INT ItemContainingSubMenu(PMENU pMenu, PMENU pSubMenu)
+{
+    // 末尾アイテムのインデックスから開始（逆順走査）
+    INT i = pMenu->cItems - 1;
+
+    if (i == -1)
+        return -1;
+
+    if (i < 0)
+        return i;   // cItems == 0 の場合（実質 -1）
+
+    PITEM pItem = &pMenu->rgItems[i];
+    for (; i >= 0; --i, --pItem)
+    {
+        PMENU spSubMenu = pItem->spSubMenu;
+
+        if (spSubMenu == NULL)
+        {
+            // 葉アイテム：wID を pSubMenu のアドレス値と比較
+            if ((PMENU)(UINT_PTR)pItem->wID == pSubMenu)
+                return i;
+        }
+        else
+        {
+            // サブメニューが直接一致
+            if (spSubMenu == pSubMenu)
+                return i;
+
+            // サブメニュー内を再帰的に検索
+            if (ItemContainingSubMenu(spSubMenu, pSubMenu) != -1)
+                return i;
+        }
     }
 
-    return (UINT)-1;
+    return -1;
+}
+
+/*
+ * UT_FindTopLevelMenuIndex
+ *
+ * トップレベルメニュー内で、指定アイテムを含むエントリの位置インデックスを返す。
+ *
+ * アイテムがトップレベルに直属する場合は uItem（コマンドID）を、
+ * サブメニュー内に存在する場合はその親メニュー（ppMenu）を
+ * ItemContainingSubMenu に渡して位置を求める。
+ *
+ * 引数:
+ *   pMenu - 検索対象のトップレベルメニュー
+ *   uItem - 検索するアイテムのコマンドID（MF_BYCOMMAND のみ）
+ *
+ * 戻り値:
+ *   見つかったトップレベルエントリの位置インデックス（0始まり）。
+ *   アイテムが見つからない、またはサブメニューを持つアイテムの場合は (UINT)-1。
+ */
+static UINT UT_FindTopLevelMenuIndex(PMENU pMenu, UINT uItem)
+{
+    PMENU ppMenu = NULL;
+    PITEM pItem  = MNLookUpItem(pMenu, uItem, FALSE, &ppMenu);
+
+    // アイテムが見つからない、またはサブメニューを持つアイテムは対象外
+    if (!pItem || pItem->spSubMenu)
+        return (UINT)-1;
+
+    // ppMenu == pMenu：アイテムはトップレベルに直属
+    //   → uItem（コマンドID）を値として ItemContainingSubMenu に渡す
+    // ppMenu != pMenu：アイテムはサブメニュー内に存在
+    //   → ppMenu（親メニューのポインタ）を ItemContainingSubMenu に渡す
+    PMENU key = (ppMenu == pMenu) ? (PMENU)(UINT_PTR)uItem : ppMenu;
+
+    return (UINT)ItemContainingSubMenu(pMenu, key);
 }
 
 // @implemented
@@ -690,4 +799,173 @@ static UINT xxxEnableMenuItem(PMENU pMenu, UINT uIDEnableItem, UINT uEnable)
     }
 
     return fOldState;
+}
+
+// @implemented
+static INT xxxMenuItemFromPoint(PWND pWnd, PMENU pMenu, DWORD X, DWORD Y)
+{
+    PWND pMenuWnd = GetMenuPwnd(pWnd, pMenu);
+    if (!pMenuWnd)
+        return -1;
+    if (!(pMenu->fFlags & MNF_POPUP))
+        xxxMNRecomputeBarIfNeeded(pMenuWnd, pMenu);
+    return MNItemHitTest(pMenu, pMenuWnd2, X, Y);
+}
+
+// @implemented
+INT NTAPI NtUserMenuItemFromPoint(HWND hWnd, HMENU hMenu, DWORD X, DWORD Y)
+{
+    PWND pWnd;
+    INT ret;
+    PTHREADINFO pti;
+    PMENU pMenu;
+    TL tl1, tl2;
+
+    EnterCrit();
+    if (hWnd)
+    {
+        pWnd = ValidateHwnd(hWnd);
+        if (!pWnd)
+        {
+            ret = -1;
+            goto Cleanup;
+        }
+    }
+    else
+    {
+        pWnd = NULL;
+    }
+
+    pti = gptiCurrent;
+    tl1.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl1;
+    tl1.pobj = pWnd;
+    if (pWnd)
+        ++pWnd->head.cLockObj;
+
+    pMenu = ValidateHmenu(hMenu);
+    if (pMenu)
+    {
+        tl2.next = pti->ptl;
+        pti->ptl = &tl2;
+        tl2.pobj = pMenu;
+        ++pMenu->head.head.cLockObj;
+
+        ret = xxxMenuItemFromPoint(pWnd, pMenu, X, Y);
+        ThreadUnlock1();
+    }
+    else
+    {
+        ret = -1;
+    }
+
+    ThreadUnlock1();
+Cleanup:
+    LeaveCrit();
+    return ret;
+}
+
+// @implemented
+BOOL NTAPI NtUserGetMenuItemRect(HWND hWnd, HMENU hMenu, UINT uItem, PRECTL lprcItem)
+{
+    PWND pWnd;
+    BOOL ret;
+    PTHREADINFO pti;
+    PMENU pMenu;
+    RECTL rc;
+    TL tl1, tl2;
+
+    EnterCrit();
+    if (hWnd)
+    {
+        pWnd = ValidateHwnd(hWnd);
+        if (!pWnd)
+        {
+            ret = FALSE;
+            goto Cleanup;
+        }
+    }
+    else
+    {
+        pWnd = NULL;
+    }
+
+    pti = gptiCurrent;
+    tl2.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl2;
+    tl2.pobj = pWnd;
+    if (pWnd)
+        ++pWnd->head.cLockObj;
+
+    pMenu = ValidateHmenu(hMenu);
+    if (pMenu)
+    {
+        tl1.next = pti->ptl;
+        pti->ptl = &tl1;
+        tl1.pobj = pMenu;
+        ++pMenu->head.head.cLockObj;
+
+        ret = xxxGetMenuItemRect(pWnd, pMenu, uItem, &rc);
+        __try
+        {
+            *lprcItem = rc;
+        } __except(...)
+        {
+            ;
+        }
+        ThreadUnlock1();
+    }
+    else
+    {
+        ret = FALSE;
+    }
+
+    ThreadUnlock1();
+Cleanup:
+    LeaveCrit();
+    return ret;
+}
+
+// @implemented
+static BOOL xxxGetMenuItemRect(PWND pWnd, PMENU pMenu, UINT uItem, LPRECTL prc)
+{
+    prc->left = prc->top = prc->right = prc->bottom = 0;
+
+    if (uItem >= pMenu->cItems)
+        return FALSE;
+
+    PWND pMenuWnd = pWnd;
+    if (!pWnd || (pWnd->state2 & WNDS2_WIN50COMPAT))
+        pMenuWnd = GetMenuPwnd(pWnd, pMenu);
+
+    if (!pMenuWnd)
+        return FALSE;
+
+    BOOL bRTL = !!(pMenuWnd->ExStyle & WS_EX_LAYOUTRTL);
+    LONG originX, originY;
+
+    if (pMenu->fFlags & MNF_POPUP)
+    {
+        originX = bRTL ? pMenuWnd->rcClient.right : pMenuWnd->rcClient.left;
+        originY = pMenuWnd->rcClient.top;
+    }
+    else
+    {
+        xxxMNRecomputeBarIfNeeded(pMenuWnd, pMenu);
+        originX = bRTL ? pMenuWnd->rcWindow.right : pMenuWnd->rcWindow.left;
+        originY = pMenuWnd->rcWindow.top;
+    }
+
+    if (uItem >= pMenu->cItems) // Re-check after potential recompute
+        return FALSE;
+
+    PITEM pItem = &pMenu->rgItems[uItem];
+    prc->right  = pItem->cxItem;
+    prc->bottom = pItem->cyItem;
+
+    LONG dx = bRTL ? (originX - (pItem->cxItem + pItem->xItem))
+                   : (originX + pItem->xItem);
+
+    OffsetRect((LPRECT)prc, dx, originY + pItem->yItem);
+    return TRUE;
 }
