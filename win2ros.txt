@@ -1,0 +1,1 @@
+xxxInternalGetMessage --> co_IntGetPeekMessage
