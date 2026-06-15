@@ -92,6 +92,152 @@ typedef struct tagPOPUPMENU
     UINT posDropped;
 } POPUPMENU, *PPOPUPMENU;
 
+typedef struct _MENUWND
+{
+    WND wnd;
+    PPOPUPMENU ppopupmenu;
+} MENUWND, *PMENUWND;
+
+typedef struct _HEAD
+{
+    HANDLE h;
+    DWORD cLockObj;
+} HEAD, *PHEAD;
+
+typedef struct _DESKTOP
+{
+    /* Must be the first member */
+    DWORD dwSessionId;
+
+    PDESKTOPINFO pDeskInfo;
+    LIST_ENTRY ListEntry;
+    /* Pointer to the associated window station. */
+    struct _WINSTATION_OBJECT *rpwinstaParent;
+    DWORD dwDTFlags;
+    DWORD_PTR dwDesktopId;
+    PMENU spmenuSys;
+    PMENU spmenuDialogSys;
+    PMENU spmenuHScroll;
+    PMENU spmenuVScroll;
+    PWND spwndForeground;
+    PWND spwndTray;
+    PWND spwndMessage;
+    PWND spwndTooltip;
+    PVOID hsectionDesktop;
+    PVOID pheapDesktop;
+    ULONG_PTR ulHeapSize;
+    LIST_ENTRY PtiList;
+
+    /* One console input thread per desktop, maintained by CONSRV */
+    DWORD dwConsoleThreadId;
+
+    /* Use for tracking mouse moves. */
+    PWND spwndTrack;
+    DWORD htEx;
+    RECT rcMouseHover;
+    DWORD dwMouseHoverTime;
+} DESKTOP, *PDESKTOP;
+
+typedef struct _PROCDESKHEAD
+{
+    HEAD;
+    DWORD_PTR hTaskWow;
+    struct _DESKTOP *rpdesk;
+    PVOID pSelf;
+} PROCDESKHEAD, *PPROCDESKHEAD;
+
+typedef struct tagITEM
+{
+    UINT fType;
+    UINT fState;
+    UINT wID;
+    struct tagMENU *spSubMenu; /* Pop-up menu. */
+    HANDLE hbmpChecked;
+    HANDLE hbmpUnchecked;
+    USHORT *Xlpstr; /* Item text pointer. */
+    ULONG cch;
+    DWORD_PTR dwItemData;
+    ULONG xItem; /* Item position. left */
+    ULONG yItem; /*     "          top */
+    ULONG cxItem; /* Item Size Width */
+    ULONG cyItem; /*     "     Height */
+    ULONG dxTab; /* X position of text after Tab */
+    ULONG ulX; /* underline.. start position */
+    ULONG ulWidth; /* underline.. width */
+    HBITMAP hbmp; /* bitmap */
+    INT cxBmp; /* Width Maximum size of the bitmap items in MIIM_BITMAP state */
+    INT cyBmp; /* Height " */
+} ITEM, *PITEM;
+
+typedef struct tagMENU
+{
+    PROCDESKHEAD head;
+    ULONG fFlags; /* [Style flags | Menu flags] */
+    INT iItem; /* nPos of selected item, if -1 not selected. AKA focused item */
+    UINT cAlloced; /* Number of allocated items. Inc's of 8 */
+    UINT cItems; /* Number of items in the menu */
+    ULONG cxMenu; /* Width of the whole menu */
+    ULONG cyMenu; /* Height of the whole menu */
+    ULONG cxTextAlign; /* Offset of text when items have both bitmaps and text */
+    struct _WND *spwndNotify; /* window receiving the messages for ownerdraw */
+    PITEM rgItems; /* Array of menu items */
+    struct tagMENULIST *pParentMenus; /* If this is SubMenu, list of parents. */
+    DWORD dwContextHelpId;
+    ULONG cyMax; /* max height of the whole menu, 0 is screen height */
+    DWORD_PTR dwMenuData; /* application defined value */
+    HBRUSH hbrBack; /* brush for menu background */
+    INT iTop; /* Current scroll position Top */
+    INT iMaxTop; /* Current scroll position Max Top */
+    DWORD dwArrowsOn:2; /* Arrows: 0 off, 1 on, 2 to the top, 3 to the bottom. */
+} MENU, *PMENU;
+
+/* Menu fFlags, upper byte is MNS_X style flags. */
+#define MNF_POPUP      0x0001
+#define MNF_UNDERLINE  0x0004
+#define MNF_INACTIVE   0x0010
+#define MNF_RTOL       0x0020
+#define MNF_DESKTOPMN  0x0040
+#define MNF_SYSDESKMN  0x0080
+#define MNF_SYSSUBMENU 0x0100
+/* Hack */
+#define MNF_SYSMENU    0x0200
+
+/* (other FocusedItem values give the position of the focused item) */
+#define NO_SELECTED_ITEM 0xffff
+
+#define MF_BYCOMMAND	0
+#define MF_BYPOSITION	0x400
+#define MF_UNCHECKED	0
+#define MF_HILITE	0x80
+#define MF_UNHILITE	0
+
+#define MF_ENABLED	0
+#define MF_GRAYED	1
+#define MF_DISABLED	2
+#define MF_BITMAP	4
+#define MF_CHECKED	8
+#define MF_MENUBARBREAK 0x20
+#define MF_MENUBREAK	0x40
+#define MF_OWNERDRAW	0x100
+#define MF_POPUP	0x10
+#define MF_SEPARATOR	0x800
+#define MF_STRING	0
+#define MF_UNCHECKED	0
+#define MF_DEFAULT	0x1000
+#define MF_SYSMENU	0x2000
+#define MF_HELP	0x4000
+#define MF_END	0x80
+#define MF_RIGHTJUSTIFY	0x4000
+#define MF_MOUSESELECT	0x8000
+#define MF_INSERT 0
+#define MF_CHANGE 0x80
+#define MF_APPEND 0x100
+#define MF_DELETE 0x200
+#define MF_REMOVE 0x1000
+#define MF_USECHECKBITMAPS 0x200
+#define MF_UNHILITE 0
+#define MF_HILITE 0x80
+
 typedef struct tagMENUSTATE
 {
   PPOPUPMENU  pGlobalPopupMenu;
@@ -311,3 +457,9 @@ typedef struct tagQ
   BYTE afKeyRecentDown[32];
   BYTE afKeyState[64];
 } Q, *PQ;
+
+typedef struct tagMENULIST
+{
+    struct tagMENULIST *pNext;
+    struct tagMENU *pMenu;
+} MENULIST, *PMENULIST;

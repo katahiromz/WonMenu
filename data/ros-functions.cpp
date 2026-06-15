@@ -1,4 +1,4 @@
-BOOL NTAPI
+BOOL APIENTRY
 NtUserTrackPopupMenuEx(
     _In_ HMENU hMenu,
     _In_ UINT fuFlags,
