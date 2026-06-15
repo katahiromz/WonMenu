@@ -969,3 +969,25 @@ static BOOL xxxGetMenuItemRect(PWND pWnd, PMENU pMenu, UINT uItem, LPRECTL prc)
     OffsetRect((LPRECT)prc, dx, originY + pItem->yItem);
     return TRUE;
 }
+
+/* ウィンドウにメニューを設定し、必要に応じてフレームを再描画する */
+static BOOL xxxSetMenu(PWND pWnd, PMENU pMenu, BOOL Repaint)
+{
+    if ((pWnd->style & (WS_POPUP | WS_CHILD)) == WS_CHILD)
+    {
+        UserSetLastError(ERROR_CHILD_WINDOW_MENU);
+        return FALSE;
+    }
+
+    /* 参照カウント付きポインタ代入でメニューを差し替える */
+    LockWndMenu(pWnd, &pWnd->spmenu, pMenu);
+
+    /* 最小化中はフレームが見えないため再描画は不要 */
+    if ((pWnd->style & WS_MINIMIZE) == 0)
+    {
+        if (Repaint)
+            xxxRedrawFrame(pWnd);
+    }
+
+    return TRUE;
+}
