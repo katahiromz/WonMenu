@@ -387,3 +387,115 @@ HMENU NTAPI NtUserGetSystemMenu(HWND hWnd, BOOL bRevert)
     LeaveCrit();
     return hSysMenu;
 }
+
+// @implemented
+static BOOL _SetMenuContextHelpId(PMENU pMenu, DWORD dwContextHelpId)
+{
+    pMenu->dwContextHelpId = dwContextHelpId;
+    return TRUE;
+}
+
+// @implemented
+BOOL NTAPI NtUserSetMenuContextHelpId(HMENU hMenu, DWORD dwContextHelpId)
+{
+    PMENU pMenu;
+    BOOL ret;
+
+    EnterCrit();
+    pMenu = ValidateHmenu(hMenu);
+    ret = pMenu && !(pMenu->fFlags & MNF_DESKTOPMN) && _SetMenuContextHelpId(pMenu, dwContextHelpId);
+    LeaveCrit();
+    return ret;
+}
+
+/*
+ * _SetMenuDefaultItem
+ *
+ * メニューのデフォルトアイテムを設定する。
+ * uItem == (UINT)-1 の場合はデフォルトアイテムをクリアするだけで終わる。
+ * それ以外の場合は、現在のデフォルトアイテムを解除し、指定アイテムを新たにデフォルトに設定する。
+ *
+ * 引数:
+ *   pMenu  - 操作対象のメニュー
+ *   uItem  - デフォルトに設定するアイテムのIDまたは位置。(UINT)-1 でクリアのみ。
+ *   fByPos - TRUE なら位置で検索（MF_BYPOSITION）、FALSE ならIDで検索（MF_BYCOMMAND）
+ *
+ * 戻り値:
+ *   成功時 TRUE、アイテムが見つからない・無効・セパレータの場合は FALSE。
+ */
+// @implemented
+static BOOL _SetMenuDefaultItem(PMENU pMenu, UINT uItem, UINT fByPos)
+{
+    PMENU  pMenuOrig = pMenu;
+    PITEM  pItemNew  = NULL;   // 新たにデフォルトに設定するアイテム（NULL はクリアのみ）
+
+    if (uItem != (UINT)-1)
+    {
+        // 指定アイテムを検索
+        // MNLookUpItem は見つかったアイテムの親メニューを pMenu に書き戻す
+        pItemNew = MNLookUpItem(pMenu, uItem, fByPos, &pMenu);
+
+        // 見つからない、サブメニュー内のアイテム（直属でない）、またはセパレータは不可
+        if (!pItemNew || pMenu != pMenuOrig || (pItemNew->fType & MF_SEPARATOR))
+            return FALSE;
+    }
+
+    // --- 既存のデフォルトアイテムをすべて解除 ---
+    // 新たに設定するアイテム自身はスキップする（二重処理を避けるため）
+    PITEM pItem = pMenuOrig->rgItems;
+    for (UINT i = pMenuOrig->cItems; i > 0; --i, ++pItem)
+    {
+        if ((pItem->fState & MF_DEFAULT) && pItem != pItemNew)
+        {
+            pItem->ulWidth = 0;
+            pItem->fState &= ~MF_DEFAULT;
+            pItem->ulX    = 0x7FFFFFFF;   // 描画位置を無効値にリセット
+        }
+    }
+
+    // --- 新たなデフォルトアイテムを設定 ---
+    if (uItem != (UINT)-1 && !(pItemNew->fState & MF_DEFAULT))
+    {
+        pItemNew->ulWidth = 0;
+        pItemNew->fState |= MF_DEFAULT;
+        pItemNew->ulX    = 0x7FFFFFFF;   // 描画位置を無効値にリセット
+    }
+
+    return TRUE;
+}
+
+// @implemented
+BOOL NTAPI NtUserSetMenuDefaultItem(HMENU hMenu, UINT uItem, UINT fByPos)
+{
+    PMENU pMenu;
+    BOOL ret;
+
+    EnterCrit();
+    pMenu = ValidateHmenu(hMenu);
+    ret = pMenu && !(pMenu->fFlags & MNF_DESKTOPMN) && _SetMenuDefaultItem(pMenu, uItem, fByPos);
+    LeaveCrit();
+    return ret;
+}
+
+// @implemented
+static BOOL _SetMenuFlagRtoL(PMENU pMenu)
+{
+    pMenu->fFlags |= MNF_RTOL;
+    return TRUE;
+}
+
+// @implemented
+BOOL NTAPI NtUserSetMenuFlagRtoL(HMENU hMenu)
+{
+    PMENU pMenu;
+    BOOL ret;
+
+    EnterCrit();
+    pMenu = ValidateHmenu(hMenu);
+    if (pMenu)
+        ret = _SetMenuFlagRtoL(pMenu);
+    else
+        ret = FALSE;
+  LeaveCrit();
+  return ret;
+}
