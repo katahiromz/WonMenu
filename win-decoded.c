@@ -332,7 +332,7 @@ Quit:
 }
 
 // @unimplemented
-static BOOL xxxRemoveDeleteMenuHelper(PMENU pMenu, UINT uPosition, UINT uFlags, UINT a4)
+static BOOL xxxRemoveDeleteMenuHelper(PMENU pMenu, UINT uPosition, UINT uFlags, BOOL bDelete)
 {
     // FIXME
 }
@@ -340,7 +340,44 @@ static BOOL xxxRemoveDeleteMenuHelper(PMENU pMenu, UINT uPosition, UINT uFlags, 
 // @implemented
 static BOOL xxxRemoveMenu(PMENU pMenu, UINT uPosition, UINT uFlags)
 {
-    return xxxRemoveDeleteMenuHelper(pMenu, uPosition, uFlags, 0);
+    return xxxRemoveDeleteMenuHelper(pMenu, uPosition, uFlags, FALSE);
+}
+
+// @implemented
+static BOOL xxxDeleteMenu(PMENU pMenu, UINT uPosition, UINT uFlags)
+{
+    return xxxRemoveDeleteMenuHelper(pMenu, uPosition, uFlags, TRUE);
+}
+
+// @implemented
+BOOL NTAPI NtUserDeleteMenu(HMENU hMenu, UINT uPosition, UINT uFlags)
+{
+    PMENU pMenu;
+    BOOL ret = FALSE;
+    TL tl;
+
+    EnterCrit();
+    if (HIWORD(uFlags))
+    {
+        UserSetLastError(ERROR_INVALID_FLAGS);
+        goto Cleanup;
+    }
+
+    pMenu = ValidateHmenu(hMenu);
+    if (!pMenu || (pMenu->fFlags & MNF_DESKTOPMN) || (pMenu->fFlags & MNF_SYSMENU))
+        goto Cleanup;
+
+    tl.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl;
+    tl.pobj = pMenu;
+    ++pMenu->head.head.cLockObj;
+
+    ret = xxxDeleteMenu(pMenu, uPosition, uFlags);
+    ThreadUnlock1();
+
+Cleanup:
+    LeaveCrit();
+    return ret;
 }
 
 // @implemented
@@ -927,6 +964,21 @@ Cleanup:
 }
 
 // @implemented
+static PWND GetMenuPwnd(PWND pWnd, PMENU pMenu)
+{
+    PPOPUPMENU pPopupMenu;
+
+    if ((pMenu->fFlags & MNF_POPUP) && (!pWnd || (pWnd->fnid & 0x3FFF) != FNID_MENU))
+    {
+        pPopupMenu = MNGetPopupFromMenu(pMenu, 0);
+        if (pPopupMenu)
+            return pPopupMenu->spwndPopupMenu;
+    }
+
+    return pWnd;
+}
+
+// @implemented
 static BOOL xxxGetMenuItemRect(PWND pWnd, PMENU pMenu, UINT uItem, LPRECTL prc)
 {
     prc->left = prc->top = prc->right = prc->bottom = 0;
@@ -970,7 +1022,13 @@ static BOOL xxxGetMenuItemRect(PWND pWnd, PMENU pMenu, UINT uItem, LPRECTL prc)
     return TRUE;
 }
 
-/* ウィンドウにメニューを設定し、必要に応じてフレームを再描画する */
+// @implemented
+static void xxxRedrawFrame(PWND pWnd)
+{
+    xxxSetWindowPos(pWnd, 0, 0, 0, 0, 0, SWP_DRAWFRAME | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE);
+}
+
+// @implemented
 static BOOL xxxSetMenu(PWND pWnd, PMENU pMenu, BOOL Repaint)
 {
     if ((pWnd->style & (WS_POPUP | WS_CHILD)) == WS_CHILD)
@@ -979,10 +1037,8 @@ static BOOL xxxSetMenu(PWND pWnd, PMENU pMenu, BOOL Repaint)
         return FALSE;
     }
 
-    /* 参照カウント付きポインタ代入でメニューを差し替える */
     LockWndMenu(pWnd, &pWnd->spmenu, pMenu);
 
-    /* 最小化中はフレームが見えないため再描画は不要 */
     if ((pWnd->style & WS_MINIMIZE) == 0)
     {
         if (Repaint)

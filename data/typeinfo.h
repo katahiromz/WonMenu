@@ -404,6 +404,14 @@ typedef struct _THRDESKHEAD
   PVOID pSelf;
 } THRDESKHEAD, *PTHRDESKHEAD;
 
+typedef struct _LARGE_STRING
+{
+  ULONG Length;
+  ULONG MaximumLength:31;
+  ULONG bAnsi:1;
+  PVOID Buffer;
+} LARGE_STRING, *PLARGE_STRING;
+
 typedef struct _WND
 {
   THRDESKHEAD head;
@@ -412,7 +420,8 @@ typedef struct _WND
   DWORD ExStyle;
   DWORD style;
   HINSTANCE hModule;
-  DWORD fnid;
+  WORD hMod16;
+  WORD fnid;
   struct _WND *spwndNext;
   struct _WND *spwndPrev;
   struct _WND *spwndParent;
@@ -425,11 +434,11 @@ typedef struct _WND
   HRGN hrgnUpdate;
   PVOID ppropList;
   PVOID pSBInfo;
-  PVOID spmenuSys;
-  PVOID spmenu;
+  PMENU spmenuSys;
+  PMENU spmenu;
   HRGN hrgnClip;
-  LARGE_UNICODE_STRING strName;
-  ULONG ULONG;
+  LARGE_STRING strName;
+  ULONG cbwndExtra;
   struct _WND *spwndLastActive;
   HIMC hImc;
   LONG_PTR dwUserData;
