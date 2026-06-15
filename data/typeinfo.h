@@ -53,32 +53,39 @@ typedef struct _DESKTOPINFO
 
 typedef struct tagPOPUPMENU
 {
-    ULONG fIsMenuBar:1;
-    ULONG fHasMenuBar:1;
-    ULONG fIsSysMenu:1;
-    ULONG fIsTrackPopup:1;
-    ULONG fDroppedLeft:1;
-    ULONG fHierarchyDropped:1;
-    ULONG fRightButton:1;
-    ULONG fToggle:1;
-    ULONG fSynchronous:1;
-    ULONG fFirstClick:1;
-    ULONG fDropNextPopup:1;
-    ULONG fNoNotify:1;
-    ULONG fAboutToHide:1;
-    ULONG fShowTimer:1;
-    ULONG fHideTimer:1;
-    ULONG fDestroyed:1;
-    ULONG fDelayedFree:1;
-    ULONG fFlushDelayedFree:1;
-    ULONG fFreed:1;
-    ULONG fInCancel:1;
-    ULONG fTrackMouseEvent:1;
-    ULONG fSendUninit:1;
-    ULONG fRtoL:1;
-    // ULONG fDesktopMenu:1;
-    ULONG iDropDir:5;
-    ULONG fUseMonitorRect:1;
+    union
+    {
+        ULONG flags;
+        struct
+        {
+            ULONG fIsMenuBar:1;
+            ULONG fHasMenuBar:1;
+            ULONG fIsSysMenu:1;
+            ULONG fIsTrackPopup:1;
+            ULONG fDroppedLeft:1;
+            ULONG fHierarchyDropped:1;
+            ULONG fRightButton:1;
+            ULONG fToggle:1;
+            ULONG fSynchronous:1;
+            ULONG fFirstClick:1;
+            ULONG fDropNextPopup:1;
+            ULONG fNoNotify:1;
+            ULONG fAboutToHide:1;
+            ULONG fShowTimer:1;
+            ULONG fHideTimer:1;
+            ULONG fDestroyed:1;
+            ULONG fDelayedFree:1;
+            ULONG fFlushDelayedFree:1;
+            ULONG fFreed:1;
+            ULONG fInCancel:1;
+            ULONG fTrackMouseEvent:1;
+            ULONG fSendUninit:1;
+            ULONG fRtoL:1;
+            // ULONG fDesktopMenu:1;
+            ULONG iDropDir:5;
+            ULONG fUseMonitorRect:1;
+        };
+    };
     struct _WND *spwndNotify;
     struct _WND *spwndPopupMenu;
     struct _WND *spwndNextPopup;

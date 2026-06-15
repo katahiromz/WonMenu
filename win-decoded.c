@@ -23,6 +23,25 @@ static void UnlockWndMenu(PWND pWnd, PMENU *ppMenu)
 }
 
 // @implemented
+static UINT UT_FindTopLevelMenuIndex(PMENU pMenu, UINT uItem)
+{
+    PMENU pFoundMenu = NULL;
+
+    PITEM pItem = MNLookUpItem(pMenu, uItem, FALSE, &pFoundMenu);
+    if (!pItem)
+        return (UINT)-1;
+
+    PITEM pTopItem = pMenu->rgItems;
+    for (UINT i = 0; i < pMenu->cItems; ++i, ++pTopItem)
+    {
+        if (pTopItem->spSubMenu == pFoundMenu)
+            return i;
+    }
+
+    return (UINT)-1;
+}
+
+// @implemented
 static PPOPUPMENU MNGetPopupFromMenu(PMENU pMenu, PMENUSTATE *ppMenuState)
 {
     PPOPUPMENU pNode;
@@ -535,4 +554,140 @@ BOOL NTAPI NtUserSetMenuFlagRtoL(HMENU hMenu)
         ret = FALSE;
   LeaveCrit();
   return ret;
+}
+
+static INT xxxPaintMenuBar(PWND pWnd, HDC hDC, ULONG left, ULONG rightBorder, ULONG top, BOOL bActive)
+{
+    PMENU spmenu;
+    HBRUSH hbrBack, hOldBrush;
+    INT cyMenu;
+    TL tl;
+
+    spmenu = pWnd->spmenu;
+    if (!spmenu)
+        return 0;
+
+    ThreadLockMenuNoModify(spmenu, &tl);
+
+    if (bActive)
+        spmenu->fFlags &= ~MNF_INACTIVE;
+    else
+        spmenu->fFlags |= MNF_INACTIVE;
+
+    if (pWnd != spmenu->spwndNotify || !spmenu->cxMenu || !spmenu->cyMenu)
+        xxxMenuBarCompute(spmenu, pWnd, top, left, pWnd->rcWindow.right - pWnd->rcWindow.left - left - rightBorder);
+    hbrBack = spmenu->hbrBack;
+    if (!hbrBack)
+        hbrBack = (HBRUSH)gpsi[1].mpFnidPfn[25]; // FIXME
+
+    hOldBrush = GreSelectBrush(hDC, hbrBack);
+    NtGdiPatBlt(hDC, left, top, spmenu->cxMenu, spmenu->cyMenu, PATCOPY);
+    xxxMenuDraw(hDC, spmenu);
+    GreSelectBrush(hDC, hOldBrush);
+
+    cyMenu = spmenu->cyMenu;
+    ThreadUnlockMenuNoModify(&tl);
+    return cyMenu;
+}
+
+// @implemented
+DWORD NTAPI NtUserPaintMenuBar(HWND hWnd, HDC hDC, ULONG leftBorder, ULONG rightBorder, ULONG top, BOOL bActive)
+{
+    PWND pWnd;
+    DWORD ret = FALSE;
+    TL tl;
+
+    EnterCrit();
+    pWnd = ValidateHwnd(hWnd);
+    if (!pWnd)
+        goto Cleanup;
+
+    tl.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl;
+    tl.pobj = pWnd;
+    ++pWnd->head.cLockObj;
+    if ((pWnd->style & 0xC000) == 0x4000)
+    {
+        UserSetLastError(ERROR_INVALID_PARAMETER);
+        goto Cleanup;
+    }
+
+    if ((bActive & ~TRUE))
+    {
+        UserSetLastError(ERROR_INVALID_FLAGS);
+        goto Cleanup;
+    }
+
+    if ((LONG)leftBorder >= 0 && (LONG)rightBorder >= 0 && (LONG)top >= 0)
+    {
+        ret = xxxPaintMenuBar(pWnd, hDC, leftBorder, rightBorder, top, bActive);
+        goto Cleanup;
+    }
+
+Cleanup:
+    ThreadUnlock1();
+    LeaveCrit();
+    return ret;
+}
+
+// @implemented
+static DWORD xxxCalcMenuBar(PWND pWnd, ULONG leftBorder, ULONG rightBorder, ULONG top, PRECTL prc)
+{
+    PMENU spmenu;
+    DWORD cyMenu;
+    TL tl;
+
+    spmenu = pWnd->spmenu;
+    if ((pWnd->style & 0xC000) == 0x4000 || !spmenu)
+        return 0;
+
+    ThreadLockMenuNoModify(spmenu, &tl);
+    xxxMenuBarCompute(spmenu, pWnd, top, leftBorder, prc->right - prc->left - leftBorder - rightBorder);
+    cyMenu = spmenu->cyMenu;
+    ThreadUnlockMenuNoModify(&tl);
+    return cyMenu;
+}
+
+// @implemented
+static UINT xxxEnableMenuItem(PMENU pMenu, UINT uIDEnableItem, UINT uEnable)
+{
+    UINT fOldState;
+    PPOPUPMENU pPopupMenu;
+    PWND spwndNotify;
+    TL tl;
+
+    fOldState = MenuItemState(pMenu, uIDEnableItem, uEnable, MF_ENABLED | MF_GRAYED | MF_DISABLED, &pMenu);
+
+    if (pMenu->fFlags & MNF_SYSSUBMENU)
+    {
+        spwndNotify = pMenu->spwndNotify;
+        if (spwndNotify)
+        {
+            if (uEnable != fOldState &&
+                (uIDEnableItem == SC_SIZE ||
+                 uIDEnableItem == SC_MOVE ||
+                 uIDEnableItem == SC_ICON ||
+                 uIDEnableItem == SC_MAXIMIZE ||
+                 uIDEnableItem == SC_CLOSE ||
+                 uIDEnableItem == SC_RESTORE))
+            {
+                tl.next = gptiCurrent->ptl;
+                gptiCurrent->ptl = &tl;
+                tl.pobj = spwndNotify;
+                ++spwndNotify->head.cLockObj;
+
+                xxxRedrawTitle(pMenu->spwndNotify, 0x1000);
+                ThreadUnlock1();
+            }
+        }
+    }
+
+    if (pMenu)
+    {
+        pPopupMenu = MNGetPopupFromMenu(pMenu, 0);
+        if (pPopupMenu)
+            xxxMNUpdateShownMenu(pPopupMenu, 0, 1);
+    }
+
+    return fOldState;
 }
