@@ -22,6 +22,42 @@ static void UnlockWndMenu(PWND pWnd, PMENU *ppMenu)
     }
 }
 
+// @implemented
+static PPOPUPMENU MNGetPopupFromMenu(PMENU pMenu, PMENUSTATE *ppMenuState)
+{
+    PPOPUPMENU pNode;
+    PMENUSTATE pMenuState;
+    PMENUWND pNextPopup;
+    PWND pwndNotify;
+
+    pwndNotify = pMenu->spwndNotify;
+    if (!pwndNotify)
+        return NULL;
+
+    pMenuState = pwndNotify->head.pti->pMenuState;
+    if (!pMenuState || !pMenuState->fIsSysMenu)
+        return NULL;
+
+    if ( ppMenuState )
+        *ppMenuState = pMenuState;
+
+    for (pNode = pMenuState->pGlobalPopupMenu; pNode; pNode = pNextPopup->ppopupmenu)
+    {
+        if (pNode->spmenu == pMenu)
+        {
+            if (pNode->fIsMenuBar)
+                return NULL;
+
+            MNAnimate(pMenuState, 0);
+            return pNode;
+        }
+        pNextPopup = (PMENUWND)pNode->spwndNextPopup;
+        if (!pNextPopup)
+            return NULL;
+    }
+    return NULL;
+}
+
 /*
  * MNLookUpItem
  *
@@ -263,6 +299,7 @@ BOOL NTAPI NtUserSetSystemMenu(HWND hWnd, HMENU hMenu)
         pti->ptl = &tl2;
         tl2.pobj = pMenu;
         ++pMenu->head.head.cLockObj;
+
         ret = xxxSetSystemMenu(pWnd, pMenu);
         ThreadUnlock1();
     }
