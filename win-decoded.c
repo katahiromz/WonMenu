@@ -807,23 +807,26 @@ static UINT xxxEnableMenuItem(PMENU pMenu, UINT uIDEnableItem, UINT uEnable)
     if (pMenu->fFlags & MNF_SYSSUBMENU)
     {
         spwndNotify = pMenu->spwndNotify;
-        if (spwndNotify)
+        if (spwndNotify && uEnable != fOldState)
         {
-            if (uEnable != fOldState &&
-                (uIDEnableItem == SC_SIZE ||
-                 uIDEnableItem == SC_MOVE ||
-                 uIDEnableItem == SC_ICON ||
-                 uIDEnableItem == SC_MAXIMIZE ||
-                 uIDEnableItem == SC_CLOSE ||
-                 uIDEnableItem == SC_RESTORE))
+            switch (uIDEnableItem)
             {
-                tl.next = gptiCurrent->ptl;
-                gptiCurrent->ptl = &tl;
-                tl.pobj = spwndNotify;
-                ++spwndNotify->head.cLockObj;
+                case SC_SIZE:
+                case SC_MOVE:
+                case SC_ICON:
+                case SC_MAXIMIZE:
+                case SC_CLOSE:
+                case SC_RESTORE:
+                {
+                    tl.next = gptiCurrent->ptl;
+                    gptiCurrent->ptl = &tl;
+                    tl.pobj = spwndNotify;
+                    ++spwndNotify->head.cLockObj;
 
-                xxxRedrawTitle(pMenu->spwndNotify, 0x1000);
-                ThreadUnlock1();
+                    xxxRedrawTitle(pMenu->spwndNotify, 0x1000);
+                    ThreadUnlock1();
+                    break;
+                }
             }
         }
     }
@@ -836,6 +839,37 @@ static UINT xxxEnableMenuItem(PMENU pMenu, UINT uIDEnableItem, UINT uEnable)
     }
 
     return fOldState;
+}
+
+// @implemented
+UINT NTAPI NtUserEnableMenuItem(HMENU hMenu, UINT uIDEnableItem, UINT uEnable)
+{
+    PMENU pMenu;
+    UINT ret = 1;
+    TL tl;
+
+    EnterCrit();
+    if (HIWORD(uEnable))
+    {
+        UserSetLastError(ERROR_INVALID_FLAGS);
+        goto Cleanup;
+    }
+
+    pMenu = ValidateHmenu(hMenu);
+    if (!pMenu || (pMenu->fFlags & MNF_DESKTOPMN))
+        goto Cleanup;
+
+    tl.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl;
+    tl.pobj = pMenu;
+    ++pMenu->head.head.cLockObj;
+
+    ret = xxxEnableMenuItem(pMenu, uIDEnableItem, uEnable);
+    ThreadUnlock1();
+
+Cleanup:
+    LeaveCrit();
+    return ret;
 }
 
 // @implemented
