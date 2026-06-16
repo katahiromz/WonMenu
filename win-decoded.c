@@ -1513,56 +1513,63 @@ LABEL_48:
     return 1;
 }
 
-int __stdcall xxxCallHandleMenuMessages(
+RESULT __stdcall xxxCallHandleMenuMessages(
         PMENUSTATE pMenuState,
-        PMENUWND pMenWnd,
-        UINT uMsg,
-        WPARAM wParam,
-        LPARAM lParam)
+        PMENUWND   pMenuWnd,
+        UINT       uMsg,
+        WPARAM     wParam,
+        LPARAM     lParam)
 {
-  UINT flags; // eax
-  LRESULT v6; // eax
-  int v7; // ebx
-  struct tagPOPUPMENU *v8; // edi
-  struct tagPOPUPMENU *pGlobalPopupMenu; // [esp-4h] [ebp-2Ch]
-  struct tagMSG pMsg; // [esp+Ch] [ebp-1Ch] BYREF
+    LRESULT    ret;
+    PPOPUPMENU pPopupMenu;
+    MSG        msg;
 
-  flags = pMenuState->flags;
-  if ( (flags & 0x4000) != 0 && (flags & 8) != 0 )
-    MNCheckButtonDownState(pMenuState);
-  if ( pMenWnd )
-    pMsg.hwnd = (HWND)pMenWnd->wnd.head.h;
-  else
-    pMsg.hwnd = 0;
-  pMsg.wParam = wParam;
-  pMsg.message = uMsg;
-  if ( uMsg < WM_MOUSEFIRST || uMsg > WM_MOUSELAST )
-  {
-    pMsg.lParam = lParam;
-  }
-  else
-  {
-    LOWORD(pMsg.lParam) = lParam + LOWORD(pMenWnd->wnd.rcClient.left);
-    HIWORD(pMsg.lParam) = LOWORD(pMenWnd->wnd.rcClient.top) + HIWORD(lParam);
-  }
-  pGlobalPopupMenu = pMenuState->pGlobalPopupMenu;
-  pMenuState->flags |= WM_MOUSEFIRST;
-  pMsg.time = 0;
-  pMsg.pt.x = 0;
-  v6 = xxxHandleMenuMessages(&pMsg, pMenuState, pGlobalPopupMenu);
-  BYTE1(pMenuState->flags) &= ~2u;
-  v7 = v6;
-  if ( v6 )
-  {
-    if ( (pMenuState->flags & 0x100) != 0 )
+    /* マウスが一度メニュー外に出てからボタンが押されている場合、
+     * ボタン押下状態の整合性チェックを行う */
+    if (pMenuState->fMouseOffMenu && pMenuState->fButtonDown)
+        MNCheckButtonDownState(pMenuState);
+
+    /* メッセージ構造体を組み立てる */
+    msg.hwnd    = pMenuWnd ? (HWND)pMenuWnd->wnd.head.h : NULL;
+    msg.message = uMsg;
+    msg.wParam  = wParam;
+    msg.time    = 0;
+    msg.pt.x    = 0;
+    msg.pt.y    = 0;
+
+    if (uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST)
     {
-      v8 = pMenuState->pGlobalPopupMenu;
-      if ( ExitMenuLoop(pMenuState, pMenuState->pGlobalPopupMenu) )
-      {
-        xxxEndMenuLoop(pMenuState, v8);
-        xxxMNEndMenuState(1);
-      }
+        /* マウスメッセージはクライアント座標へ変換する */
+        msg.lParam = MAKELPARAM(
+            GET_X_LPARAM(lParam) + pMenuWnd->wnd.rcClient.left,
+            GET_Y_LPARAM(lParam) + pMenuWnd->wnd.rcClient.top);
     }
-  }
-  return v7;
+    else
+    {
+        msg.lParam = lParam;
+    }
+
+    /* xxxHandleMenuMessages の呼び出し中であることを示すフラグをセット */
+    pMenuState->fInCallHandleMenuMessages = 1;
+
+    ret = xxxHandleMenuMessages(&msg, pMenuState, pMenuState->pGlobalPopupMenu);
+
+    /* 呼び出し完了、フラグをクリア */
+    pMenuState->fInCallHandleMenuMessages = 0;
+
+    if (ret)
+    {
+        /* モードレスメニューの場合、ループ終了条件を確認する */
+        if (pMenuState->fModelessMenu)
+        {
+            pPopupMenu = pMenuState->pGlobalPopupMenu;
+            if (ExitMenuLoop(pMenuState, pPopupMenu))
+            {
+                xxxEndMenuLoop(pMenuState, pPopupMenu);
+                xxxMNEndMenuState(TRUE);
+            }
+        }
+    }
+
+    return ret;
 }
