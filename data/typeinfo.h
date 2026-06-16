@@ -316,7 +316,7 @@ typedef struct _THREADINFO
   };
   PTL ptl;
   PVOID ppi;
-  PQ pq;
+  PUSER_MESSAGE_QUEUE pq;
   PKL spklActive;
   PVOID pcti;
   PVOID rpdesk;
@@ -479,3 +479,101 @@ typedef struct tagMENULIST
     struct tagMENULIST *pNext;
     struct tagMENU *pMenu;
 } MENULIST, *PMENULIST;
+
+typedef struct _DESKTOP
+{
+    /* Must be the first member */
+    DWORD dwSessionId;
+ 
+    PDESKTOPINFO pDeskInfo;
+    PVOID pDispInfo;
+    struct _DESKTOP *rpdeskNext;
+    PVOID rpwinstaParent;
+    DWORD dwDTFlags;
+    DWORD_PTR dwDesktopId;
+    PMENU spmenuSys;
+    PMENU spmenuDialogSys;
+    PMENU spmenuHScroll;
+    PMENU spmenuVScroll;
+    PWND spwndForeground;
+    PWND spwndTray;
+    PWND spwndMessage;
+    PWND spwndTooltip;
+    PVOID hsectionDesktop;
+    PVOID pheapDesktop;
+    ULONG_PTR ulHeapSize;
+    LIST_ENTRY PtiList;
+ 
+    /* One console input thread per desktop, maintained by CONSRV */
+    DWORD dwConsoleThreadId;
+ 
+    /* Use for tracking mouse moves. */
+    PWND spwndTrack;
+    DWORD htEx;
+    RECT rcMouseHover;
+    DWORD dwMouseHoverTime;
+} DESKTOP, *PDESKTOP;
+
+typedef struct _THRDCARETINFO
+{
+    HWND hWnd;
+    HBITMAP Bitmap;
+    POINT Pos;
+    SIZE Size;
+    BYTE Visible;
+    BYTE Showing;
+} THRDCARETINFO, *PTHRDCARETINFO;
+
+typedef struct _USER_MESSAGE_QUEUE
+{
+  /* Reference counter, only access this variable with interlocked functions! */
+  LONG References;
+
+  /* Desktop that the message queue is attached to */
+  struct _DESKTOP *Desktop;
+
+  PTHREADINFO ptiSysLock;
+  ULONG_PTR   idSysLock;
+  ULONG_PTR   idSysPeek;
+  PTHREADINFO ptiMouse;
+  PTHREADINFO ptiKeyboard;
+
+  /* Queue for hardware messages for the queue. */
+  LIST_ENTRY HardwareMessagesListHead;
+  /* Last click message for translating double clicks */
+  MSG msgDblClk;
+  /* Current capture window for this queue. */
+  PWND spwndCapture;
+  /* Current window with focus (ie. receives keyboard input) for this queue. */
+  PWND spwndFocus;
+  /* Current active window for this queue. */
+  PWND spwndActive;
+  PWND spwndActivePrev;
+  /* Current move/size window for this queue */
+  HWND MoveSize;
+  /* Current menu owner window for this queue */
+  HWND MenuOwner;
+  /* Identifes the menu state */
+  BYTE MenuState;
+  /* Message Queue Flags */
+  DWORD QF_flags;
+  DWORD cThreads; // Shared message queue counter.
+
+  /* Extra message information */
+  LPARAM ExtraInfo;
+
+  /* State of each key */
+  BYTE afKeyRecentDown[256 / 8]; // 1 bit per key
+  BYTE afKeyState[256 * 2 / 8]; // 2 bits per key
+
+  /* Showing cursor counter (value>=0 - cursor visible, value<0 - cursor hidden) */
+  INT iCursorLevel;
+
+  /* Cursor object */
+  PVOID CursorObject;
+
+  /* Caret information for this queue */
+  THRDCARETINFO CaretInfo;
+
+  DWORD dwMenuFlags;
+} USER_MESSAGE_QUEUE, *PUSER_MESSAGE_QUEUE;
