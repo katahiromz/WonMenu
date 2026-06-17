@@ -1,0 +1,51 @@
+MenuUI.c:214: hwnd: 0016012C
+MenuUI.c:246: hwnd1: 00060196
+MenuUI.c:247: hwnd2: 000B010C
+MenuUI.c:273: hwndMenu1: 00210108
+MenuUI.c:293: hwndMenu2: 00210108
+MenuUI.c:295: Test failed: hwndMenu1 == hwndMenu2
+MenuUI.c:298: Test failed: hwndFore was 00060196
+MenuUI.c:303: Test failed: hwndActive was 00000000
+MenuUI.c:304: Test failed: hwndFocus was 00000000
+MenuUI.c:305: Test failed: hwndCapture was 00000000
+MenuUI.c:312: Test failed: hwndFore was 00060196
+MenuUI.c:317: Test failed: hwndActive was 00060196
+MenuUI.c:318: Test failed: hwndFocus was 00060196
+MenuUI.c:324: Test failed: hwndActive was 00000000
+MenuUI.c:325: Test failed: hwndFocus was 00000000
+MenuUI.c:330: hwndMenu0: 00000000
+MenuUI.c:336: hwndMenu1: 000B019A
+MenuUI.c:346: hwndMenu1: 000B019A
+MenuUI.c:351: hwndMenu1: 000B019A
+MenuUI.c:356: hwndMenu1: 000B019A
+MenuUI.c:361: hwndMenu1: 00240108
+MenuUI.c:371: Test failed: GetHitID(hwnd1) was 0
+MenuUI.c:429: Test failed: nMenuCount was 2
+MenuUI.c:468: Test failed: hwndMenu1 was visible
+MenuUI.c:471: Test failed: hwndMenu1 == hwndMenu2
+MenuUI.c:474: Test failed: hwndFore was 00060196
+MenuUI.c:479: Test failed: hwndActive was 00060196
+MenuUI.c:480: Test failed: hwndFocus was 00060196
+MenuUI.c:481: Test failed: hwndFocus was 00060196
+MenuUI.c:486: Test failed: hwndActive was 00000000
+MenuUI.c:487: Test failed: hwndFocus was 00000000
+MenuUI.c:488: Test failed: hwndFocus was 00000000
+MenuUI.c:505: Test failed: hwndCapture was 00000000
+MenuUI.c:571: Test failed: nMenuCount was 1
+MenuUI.c:578: Test failed: nMenuCount was 0
+MenuUI.c:584: Test failed: GetHitID(hwnd1) was 0
+MenuUI.c:623: Test failed: hwndCapture was 00000000
+MenuUI.c:658: Test failed: hwndFore was 000B010C
+MenuUI.c:663: Test failed: hwndActive was 00000000
+MenuUI.c:664: Test failed: hwndFocus was 00000000
+MenuUI.c:665: Test failed: hwndCapture was 00000000
+MenuUI.c:670: Test failed: hwndActive was 000B010C
+MenuUI.c:671: Test failed: hwndFocus was 000B010C
+MenuUI.c:712: Test failed: hwndActive was 00000000
+MenuUI.c:713: Test failed: hwndFocus was 00000000
+MenuUI.c:714: Test failed: hwndFocus was 00000000
+MenuUI.c:719: Test failed: hwndActive was 000B010C
+MenuUI.c:720: Test failed: hwndFocus was 000B010C
+MenuUI.c:724: Test failed: nMenuCount was 0
+
+MenuUI: 131 tests executed (0 marked as todo, 38 failures), 0 skipped.

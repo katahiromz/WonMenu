@@ -166,7 +166,7 @@ static PPOPUPMENU MNGetPopupFromMenu(PMENU pMenu, PMENUSTATE *ppMenuState)
     if (!pMenuState || !pMenuState->fIsSysMenu)
         return NULL;
 
-    if ( ppMenuState )
+    if (ppMenuState)
         *ppMenuState = pMenuState;
 
     for (pNode = pMenuState->pGlobalPopupMenu; pNode; pNode = pNextPopup->ppopupmenu)
@@ -1572,4 +1572,91 @@ RESULT __stdcall xxxCallHandleMenuMessages(
     }
 
     return ret;
+}
+
+// @implemented
+static BOOL xxxMNHideNextHierarchy(PPOPUPMENU pPopupMenu)
+{
+    PMENUWND spwndNextPopup, pwndNextPopup;
+    TL tl;
+
+    spwndNextPopup = pPopupMenu->spwndNextPopup;
+    if (!spwndNextPopup)
+        return FALSE;
+
+    tl.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl;
+    tl.pobj = spwndNextPopup;
+    ++spwndNextPopup->wnd.head.cLockObj;
+
+    pwndNextPopup = pPopupMenu->spwndNextPopup;
+    if (pwndNextPopup != pPopupMenu->spwndActivePopup)
+        xxxSendMessage(&pwndNextPopup->wnd, MN_CLOSEHIERARCHY, 0, 0);
+
+    xxxSendMessage(&pPopupMenu->spwndNextPopup->wnd, MN_SELECTITEM, 0xFFFFFFFF, 0);
+    ThreadUnlock1();
+    return TRUE;
+}
+
+// @implemented
+static PPOPUPMENU MNAllocPopup(BOOL bCreate)
+{
+    PPOPUPMENU pPopupMenu;
+
+    if (bCreate || (gdwPUDFlags & 0x800000))
+    {
+        pPopupMenu = (PPOPUPMENU)Win32AllocPoolWithQuota(sizeof(POPUPMENU), 0x6D707355);
+        if (!pPopupMenu)
+            return NULL;
+    }
+    else
+    {
+        gdwPUDFlags |= 0x800000;
+        pPopupMenu = &gpopupMenu;
+    }
+
+    ZeroMemory(pPopupMenu, sizeof(POPUPMENU));
+    return pPopupMenu;
+}
+
+// @implemented
+static BOOL MNDrawHilite(PMENUSTATE pMenuState)
+{
+    UINT flags = pMenuState->flags;
+    return (flags & 0x80u) != 0 && (flags & 0xC0000000) == 0 && !MNIsCachedBmpOnly(pMenuState);
+}
+
+// @implemented
+static BOOL MNIsCachedBmpOnly(PMENUSTATE pMenuState)
+{
+    return (pMenuState->flags & 0x20000000) && !pMenuState->ptiMenuStateOwner;
+}
+
+static PHEAD xxxMNDismissWithNotify(PMENUSTATE pMenuState, PMENU pMenu, PITEM pItem, WPARAM wParam, LPARAM lParam)
+{
+    UINT uMsg;
+    HMENU hMenu;
+    UINT wID;
+
+    if ( (pMenuState->pGlobalPopupMenu->flags & 4) != 0 )
+    {
+        hMenu = (HMENU)lParam;
+        uMsg = WM_SYSCOMMAND;
+        goto LABEL_4;
+    }
+    if (!(pMenuState->flags & 0x20000))
+    {
+        uMsg = WM_COMMAND;
+        hMenu = NULL;
+LABEL_4:
+        wID = pItem->wID;
+        goto LABEL_5;
+    }
+    wID = wParam;
+    hMenu = (HMENU)pMenu->head.head.h;
+    uMsg = WM_MENUCOMMAND;
+LABEL_5:
+    if (zzzMNFadeSelection(pMenu, pItem))
+        zzzStartFade();
+    return xxxMNCancel(pMenuState, uMsg, wID, (LPARAM)hMenu);
 }
