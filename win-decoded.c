@@ -1213,304 +1213,373 @@ static UINT _GetMenuState(PMENU pMenu, UINT uIDItem, BYTE dwFlags)
     return ret;
 }
 
-void __stdcall xxxMNEndMenuState(BOOL bFlag)
+static void xxxMNEndMenuState(BOOL bFlag)
 {
-  PTHREADINFO pti; // edi
-  PMENUSTATE pMenuState; // esi
-  PMENUSTATE pMenuState2; // eax
+    PTHREADINFO pti;          // edi
+    PMENUSTATE  pMenuState;   // esi - menu state being torn down
+    PMENUSTATE  pMenuStatePrev; // eax - pti->pMenuState after pop, if any
 
-  pti = gptiCurrent;
-  pMenuState = gptiCurrent->pMenuState;
-  if ( !pMenuState->dwLockCount )
-  {
-    MNEndMenuStateNotify(gptiCurrent->pMenuState);
-    if ( pMenuState->pGlobalPopupMenu )
+    pti        = gptiCurrent;
+    pMenuState = pti->pMenuState;
+
+    if (pMenuState->dwLockCount != 0)
+        return;   // still locked, nothing to tear down yet
+
+    MNEndMenuStateNotify(pMenuState);
+
+    if (pMenuState->pGlobalPopupMenu)
     {
-      if ( bFlag )
-        MNFreePopup(pMenuState->pGlobalPopupMenu);
-      else
-        BYTE2(pMenuState->pGlobalPopupMenu->flags) &= ~1u;
+        if (bFlag)
+        {
+            MNFreePopup(pMenuState->pGlobalPopupMenu);
+        }
+        else
+        {
+            // clear fDelayedFree (bit 16 of POPUPMENU::flags)
+            pMenuState->pGlobalPopupMenu->flags &= ~0x10000;
+        }
     }
-    UnlockMFMWFPWindow(&pMenuState->uButtonDownHitArea);
-    UnlockMFMWFPWindow(&pMenuState->uDraggingHitArea);
+
+    UnlockMFMWFPWindow((PVOID *)&pMenuState->uButtonDownHitArea);
+    UnlockMFMWFPWindow((PVOID *)&pMenuState->uDraggingHitArea);
+
+    // pop this menu state off the thread's stack
     pti->pMenuState = pMenuState->pmnsPrev;
-    if ( (pMenuState->flags & 0x100) == 0 )
-      --guSFWLockCount;
-    if ( pMenuState->hbmAni )
-      MNDestroyAnimationBitmap(pMenuState);
-    if ( pMenuState == (PMENUSTATE)&gMenuState )
+
+    if ((pMenuState->flags & 0x100) == 0)   // !fModelessMenu (bit 8)
+        --guSFWLockCount;
+
+    if (pMenuState->hbmAni)
+        MNDestroyAnimationBitmap(pMenuState);
+
+    if (pMenuState == &gMenuState)
     {
-      HIBYTE(gdwPUDFlags) &= ~2u;
-      GreSetDCOwnerEx(hDC, 0, 0);
+        // global, statically-allocated menu state: just release the shared animation DC
+        gdwPUDFlags &= ~0x02000000;   // clear bit 25 (top byte, bit 1)
+        GreSetDCOwnerEx(gMenuState.hdcAni, 0, 0);
     }
     else
     {
-      if ( pMenuState->hdcAni )
-        GreDeleteDC(pMenuState->hdcAni);
-      ExFreePoolWithTag(pMenuState, 0);
+        // dynamically-allocated menu state: free its own animation DC and the struct itself
+        if (pMenuState->hdcAni)
+            GreDeleteDC(pMenuState->hdcAni);
+
+        ExFreePoolWithTag(pMenuState, 0);
     }
-    pMenuState2 = pti->pMenuState;
-    if ( pMenuState2 )
+
+    // if another (outer) menu state is now active, restore its capture/activation
+    pMenuStatePrev = pti->pMenuState;
+    if (pMenuStatePrev)
     {
-      if ( (pMenuState2->flags & 0x100) != 0 )
-        xxxActivateThisWindow(pMenuState2->pGlobalPopupMenu->spwndActivePopup, 0, 0);
-      else
-        xxxMNSetCapture(pMenuState2->pGlobalPopupMenu);
+        if (pMenuStatePrev->flags & 0x100)   // fModelessMenu
+        {
+            xxxActivateThisWindow(
+                pMenuStatePrev->pGlobalPopupMenu->spwndActivePopup,
+                0,
+                0);
+        }
+        else
+        {
+            xxxMNSetCapture(pMenuStatePrev->pGlobalPopupMenu);
+        }
     }
-  }
 }
 
-BOOL __stdcall xxxTrackPopupMenuEx(PMENU menu, UINT wFlags, int x, int y, PWND pWnd, LPTPMPARAMS lpTpm)
+static BOOL xxxTrackPopupMenuEx(PMENU menu, UINT wFlags, int x, int y, PWND pWnd, LPTPMPARAMS lpTpm)
 {
-  PMENUSTATE pMenuState; // edi
-  unsigned int KeyState; // eax
-  ULONG v8; // edx
-  PMENUWND Window; // ebx
-  struct _WND **p_spwndNotify; // edi
-  UINT v11; // ecx
-  UINT v12; // eax
-  UINT flags; // eax
-  PWND v14; // ecx
-  bool bNoRTL; // zf
-  unsigned int v16; // eax
-  int v17; // edi
-  int v18; // eax
-  PTHREADINFO v19; // eax
-  PMENUSTATE pMenuState2; // edi
-  INT v22; // esi
-  PPOPUPMENU pPopupMenu_1; // esi
-  PPOPUPMENU pGlobalPopupMenu; // esi
-  struct _WND *spwndNotify; // eax
-  PMENUWND spwndActivePopup; // esi
-  struct _THREADINFO *ptiWnd; // eax
-  PTHREADINFO pti; // ebx
-  PPOPUPMENU pPopupMenu; // esi
-  int pti3; // [esp-10h] [ebp-58h]
-  PTHREADINFO ptiWnd3; // [esp-Ch] [ebp-54h]
-  RECT rcExclude; // [esp+8h] [ebp-40h] BYREF
-  TL tl2; // [esp+18h] [ebp-30h] BYREF
-  TL tl1; // [esp+24h] [ebp-24h] BYREF
-  int v36; // [esp+30h] [ebp-18h]
-  PTHREADINFO pti2; // [esp+34h] [ebp-14h]
-  struct _THREADINFO *ptiWnd2; // [esp+38h] [ebp-10h]
-  unsigned __int32 bReturnCmd; // [esp+3Ch] [ebp-Ch]
-  int bDown; // [esp+40h] [ebp-8h]
-  PMENUSTATE pMenuState3; // [esp+44h] [ebp-4h]
-  int menua; // [esp+50h] [ebp+8h]
-  PWND pWnda; // [esp+60h] [ebp+18h]
+    PMENUSTATE pMenuState;
+    PMENUWND pwndPopup;          // ebx - the popup-menu window we create
+    PPOPUPMENU ppopupmenu;       // esi - pwndPopup->ppopupmenu
+    PTHREADINFO ptiWnd;          // thread that owns pWnd
+    PTHREADINFO ptiMonitor;      // pti2 - result of MonitorFromPoint, reused as a PTHREADINFO-typed slot
+    BOOL bReturnCmd;
+    BOOL bRightAlign;            // bDown reused: alignment-related temp before becoming "right mouse button down"
+    int  cx, cy;                 // width/height of popup, computed from MN_SIZEWINDOW result
+    RECT rcExclude;
+    TL   tlNotify, tlWnd;
+    UINT uKeyState;
+    int  iCmd;
+    BOOL bRtl;
 
-  pMenuState3 = 0;
-  if ( lpTpm )
-  {
-    if ( lpTpm->cbSize != sizeof(TPMPARAMS) )
+    pMenuState = NULL;
+
+    // Validate TPMPARAMS, if supplied
+    if (lpTpm)
     {
-      UserSetLastError(ERROR_INVALID_PARAMETER);
-      return 0;
+        if (lpTpm->cbSize != sizeof(TPMPARAMS))
+        {
+            UserSetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        rcExclude = lpTpm->rcExclude;
     }
-    rcExclude = lpTpm->rcExclude;
-  }
-  ptiWnd = pWnd->head.pti;
-  pti = gptiCurrent;
-  pti2 = gptiCurrent;
-  ptiWnd2 = ptiWnd;
-  if ( gptiCurrent != ptiWnd )
-    return 0;
-  pMenuState = gptiCurrent->pMenuState;
-  if ( !pMenuState )
-    goto LABEL_5;
-  if ( (wFlags & TPM_RECURSE) == 0 )
-  {
-    UserSetLastError(ERROR_POPUP_ALREADY_ACTIVE);
-    return 0;
-  }
-  pGlobalPopupMenu = pMenuState->pGlobalPopupMenu;
-  if ( ExitMenuLoop(pMenuState, pMenuState->pGlobalPopupMenu) )
-    return 0;
-  spwndNotify = pGlobalPopupMenu->spwndNotify;
-  if ( !spwndNotify || spwndNotify != pWnd || pMenuState->ptiMenuStateOwner != spwndNotify->head.pti )
-    return 0;
-  MNAnimate(pMenuState, 0);
-  spwndActivePopup = (PMENUWND)pGlobalPopupMenu->spwndActivePopup;
-  if ( spwndActivePopup )
-    pPopupMenu_1 = spwndActivePopup->ppopupmenu;
-  else
-    pPopupMenu_1 = 0;
-  if ( pPopupMenu_1 && (pPopupMenu_1->flags & 0x2000) != 0 )
-  {
-    _KillTimer(pPopupMenu_1->spwndPopupMenu, 0xFFFE);
-    BYTE1(pPopupMenu_1->flags) &= ~0x20u;
-  }
-  if ( (pti->pMenuState->flags & 0x100) == 0 )
-    BYTE2(pti->pq->dwMenuFlags) &= ~0x10u;
-LABEL_5:
-  if ( (wFlags & TPM_RIGHTBUTTON) != 0 )
-    KeyState = _GetKeyState(VK_RBUTTON);
-  else
-    KeyState = _GetKeyState(VK_LBUTTON);
-  v8 = menu->fFlags & 0x40000000;
-  bDown = (KeyState >> 15) & 1;
-  Window = (PMENUWND)xxxCreateWindowEx(
-                       385,
-                       TPM_LAYOUTRTL,
-                       TPM_LAYOUTRTL,
-                       0,
-                       0x80800000,
-                       x,
-                       y,
-                       100,
-                       100,
-                       v8 != 0 ? pWnd : 0,
-                       0,
-                       (LPARAM)pWnd->hModule,
-                       0,
-                       0x502u,
-                       0);
-  if ( !Window )
-    return 0;
-  if ( (pWnd->ExStyle & WS_EX_LAYOUTRTL) != 0 || ((unsigned __int16)wFlags & (unsigned __int16)TPM_LAYOUTRTL) != 0 )
-    BYTE2(Window->wnd.ExStyle) |= 0x40u;        // WS_EX_LAYOUTRTL
-  LOBYTE(Window->wnd.state2) &= ~8u;
-  tl1.next = gptiCurrent->ptl;
-  gptiCurrent->ptl = &tl1;
-  tl1.pobj = Window;
-  pPopupMenu = Window->ppopupmenu;
-  ++Window->wnd.head.cLockObj;
-  if ( !pPopupMenu )
-    goto LABEL_68;
-  BYTE2(pPopupMenu->flags) |= 1u;
-  p_spwndNotify = &pPopupMenu->spwndNotify;
-  HMAssignmentLock((PVOID *)&pPopupMenu->spwndNotify, pWnd);
-  LockPopupMenu(pPopupMenu, &pPopupMenu->spmenu, menu);
-  HMAssignmentLock((PVOID *)&pPopupMenu->spwndActivePopup, Window);
-  v11 = pPopupMenu->flags;
-  v36 = bDown & 1;
-  v12 = (32 * (wFlags & 2)) | v11 & 0xFFFFFDBF | (v36 << 9) | 8;
-  pPopupMenu->ppopupmenuRoot = pPopupMenu;
-  pPopupMenu->flags = v12;
-  if ( gpsi->argbSystemUnmatched[9] || (menu->fFlags & 0x20) != 0 )
-    pPopupMenu->flags = v12 | 0x10;
-  pPopupMenu->flags ^= (pPopupMenu->flags ^ (16 * wFlags)) & 0x800;
-  flags = pPopupMenu->flags;
-  bReturnCmd = wFlags & TPM_RETURNCMD;
-  if ( (wFlags & TPM_RETURNCMD) != 0 )
-    pPopupMenu->flags = flags | TPM_RETURNCMD;
-  ptiWnd3 = ptiWnd2;
-  pti3 = (int)pti2;
-  pPopupMenu->flags ^= (pPopupMenu->flags ^ (wFlags >> 7)) & 4;
-  pMenuState3 = (PMENUSTATE)xxxMNAllocMenuState(pti3, (int)ptiWnd3, (int)pPopupMenu);
-  if ( !pMenuState3 )
-  {
-LABEL_68:
-    LOBYTE(wFlags) = wFlags | TPM_NONOTIFY;
-LABEL_69:
-    v22 = 0;
+
+    ptiWnd = pWnd->head.pti;
+
+    // Must be called on the window's own thread
+    if (gptiCurrent != ptiWnd)
+        return FALSE;
+
+    pMenuState = gptiCurrent->pMenuState;
+    if (pMenuState)
+    {
+        // A menu is already active -- only allowed if caller asked for recursion
+        if ((wFlags & TPM_RECURSE) == 0)
+        {
+            UserSetLastError(ERROR_POPUP_ALREADY_ACTIVE);
+            return FALSE;
+        }
+
+        if (ExitMenuLoop(pMenuState, pMenuState->pGlobalPopupMenu))
+            return FALSE;
+
+        // Sanity-check that the active popup belongs to the window we were given
+        {
+            PWND spwndNotify = pMenuState->pGlobalPopupMenu->spwndNotify;
+            if (!spwndNotify ||
+                spwndNotify != pWnd ||
+                pMenuState->ptiMenuStateOwner != spwndNotify->head.pti)
+            {
+                return FALSE;
+            }
+        }
+
+        MNAnimate(pMenuState, FALSE);
+
+        {
+            PWND spwndActivePopup = pMenuState->pGlobalPopupMenu->spwndActivePopup;
+            PPOPUPMENU ppmActive = spwndActivePopup
+                ? ((PMENUWND)spwndActivePopup)->ppopupmenu
+                : NULL;
+
+            if (ppmActive && (ppmActive->flags & 0x2000))   // popup has an active timer-driven submenu
+            {
+                _KillTimer(ppmActive->spwndPopupMenu, ID_SUBMENU_TIMER /* 0xFFFE */);
+                ppmActive->flags &= ~0x2000;
+            }
+        }
+
+        if ((gptiCurrent->pMenuState->TIF_flags /* placeholder bit-test */ & 0x100) == 0)
+        {
+            // clears a flag in the message-queue's dwMenuFlags
+            *((BYTE *)&gptiCurrent->pq->dwMenuFlags + 2) &= ~0x10;
+        }
+    }
+
+    // Determine initial mouse-button state used for highlighting
+    uKeyState = (wFlags & TPM_RIGHTBUTTON) ? _GetKeyState(VK_RBUTTON)
+                                            : _GetKeyState(VK_LBUTTON);
+    bRightAlign = (uKeyState >> 15) & 1;   // high bit of GetKeyState = button currently down
+
+    bRtl = (menu->fFlags & 0x40000000) != 0;  // RTL hint taken from menu flags
+
+    // Create the hidden popup-menu window that hosts this track session
+    pwndPopup = (PMENUWND)xxxCreateWindowEx(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,                // 385
+        MAKEINTATOM(POPUPMENU_CLASS_ATOM),                // class atom
+        NULL,                                              // window name
+        WS_POPUP,                                          // 0x80800000
+        x, y, 100, 100,
+        bRtl ? pWnd : NULL,
+        NULL,
+        pWnd->hModule,
+        NULL,
+        0x502,            // extra create flags
+        NULL);
+
+    if (!pwndPopup)
+        return FALSE;
+
+    if ((pWnd->ExStyle & WS_EX_LAYOUTRTL) || (wFlags & TPM_LAYOUTRTL))
+        pwndPopup->wnd.ExStyle |= WS_EX_LAYOUTRTL;
+
+    pwndPopup->wnd.state2 &= ~0x08;
+
+    // Lock the window via the thread's TL list
+    tlWnd.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tlWnd;
+    tlWnd.pobj = pwndPopup;
+    pwndPopup->wnd.head.cLockObj++;
+
+    ppopupmenu = pwndPopup->ppopupmenu;
+    if (!ppopupmenu)
+        goto Cleanup;
+
+    ppopupmenu->flags |= 0x100;   // mark popup as "owns a window" / initialized (byte1 bit0)
+
+    HMAssignmentLock((PVOID *)&ppopupmenu->spwndNotify, pWnd);
+    LockPopupMenu(ppopupmenu, &ppopupmenu->spmenu, menu);
+    HMAssignmentLock((PVOID *)&ppopupmenu->spwndActivePopup, pwndPopup);
+
+    ppopupmenu->ppopupmenuRoot = ppopupmenu;
+    ppopupmenu->flags =
+        (ppopupmenu->flags & 0xFFFFFDBF) |
+        ((wFlags & 2) << 5)        |   // fHasMenuBar-ish flag derived from TPM flag
+        ((bRightAlign & 1) << 9)   |
+        0x08;
+
+    if (gpsi->something /* gpsi+0x660 */ || (menu->fFlags & MNF_SYSDESKMN))
+        ppopupmenu->flags |= 0x10;
+
+    ppopupmenu->flags ^= (ppopupmenu->flags ^ (wFlags << 4)) & 0x800;
+
+    bReturnCmd = (wFlags & TPM_RETURNCMD) != 0;
+    if (bReturnCmd)
+        ppopupmenu->flags |= TPM_RETURNCMD;
+
+    ppopupmenu->flags ^= (ppopupmenu->flags ^ (wFlags >> 7)) & 0x04;
+
+    pMenuState = (PMENUSTATE)xxxMNAllocMenuState(
+        (int)gptiCurrent, (int)ptiWnd, (int)ppopupmenu);
+
+    if (!pMenuState)
+    {
+        wFlags |= TPM_NONOTIFY;
+        goto NotifyExitAndCleanup;
+    }
+
+    if ((ppopupmenu->flags & 0x800) == 0)
+        xxxSendMessage(pWnd, WM_ENTERMENULOOP, (ppopupmenu->flags & 0x04) == 0, 0);
+
+    if (!xxxMNStartMenu(ppopupmenu, -1))
+        goto NotifyExitAndCleanup;
+
+    if (pMenuState->flags & 0x400 /* fDragAndDrop-ish */)
+        xxxClientRegisterDragDrop((char)pwndPopup->wnd.head.h);
+
+    if ((ppopupmenu->flags & 0x800) == 0)
+    {
+        PWND spwndNotify = ppopupmenu->spwndNotify;
+
+        tlNotify.next = gptiCurrent->ptl;
+        gptiCurrent->ptl = &tlNotify;
+        tlNotify.pobj = spwndNotify;
+        if (spwndNotify)
+            spwndNotify->head.cLockObj++;
+
+        xxxSendMessage(
+            spwndNotify,
+            WM_INITMENUPOPUP,
+            (WPARAM)menu->head.head.h,
+            ((ppopupmenu->flags >> 2) & 1) << 16);
+
+        ThreadUnlock1();
+        ppopupmenu->flags |= 0x2000;
+    }
+
+    if (!xxxSendMessage((PWND)pwndPopup, MN_SIZEWINDOW, 1, 0))
+        goto NotifyExitAndCleanup;
+    {
+        LRESULT lres = xxxSendMessage((PWND)pwndPopup, MN_SIZEWINDOW, 1, 0);
+        cx = (short)lres;
+        cy = (short)(lres >> 16);
+    }
+
+    if (dword_BF9B5E24 & 1)
+    {
+        pMenuState->flags     |= 0x20;   // fHierarchyDropped
+        menu->fFlags |= MNF_UNDERLINE;
+    }
+    else
+    {
+        menu->fFlags &= ~MNF_UNDERLINE;
+    }
+
+    cx += 2 * gpsi->aiSysMet[SM_CXMAXTRACK];
+    cy += 2 * gpsi->aiSysMet[SM_CYMAXTRACK];
+
+    ptiMonitor = (PTHREADINFO)_MonitorFromPoint((POINT){x, y}, MONITOR_DEFAULTTONEAREST);
+
+    if ((pWnd->ExStyle & WS_EX_LAYOUTRTL) && (wFlags & TPM_HORPOSANIMATION /* 4 */) == 0)
+        wFlags ^= TPM_HORNEGANIMATION /* 8 */;
+
+    if (wFlags & 8)
+    {
+        x -= cx;
+        ppopupmenu->flags = (ppopupmenu->flags & 0xF17FFFFF) | 0x1000000;
+    }
+    else if (wFlags & 4)
+    {
+        x += cx / -2;
+    }
+    else
+    {
+        ppopupmenu->flags ^= (ppopupmenu->flags ^
+            ((((ppopupmenu->flags & 0x10) != 0) + 1) << 23)) & 0xF800000;
+    }
+
+    if (wFlags & 0x20)
+    {
+        y -= cy;
+        ppopupmenu->flags |= 0x4000000;  // high byte bit2
+    }
+    else if (wFlags & 0x10)
+    {
+        y += cy / -2;
+    }
+    else
+    {
+        ppopupmenu->flags |= 0x2000000;  // high byte bit1
+    }
+
+    if (wFlags & 0x3C00)
+        ppopupmenu->flags = (ppopupmenu->flags & 0xF07FFFFF) | ((wFlags & 0x3C00) << 13);
+
+    pWnd = (PWND)FindBestPos(
+        x, y, cx, cy,
+        lpTpm ? &rcExclude : NULL,
+        wFlags,
+        ppopupmenu,
+        ptiMonitor);
+
+    if ((pwndPopup->wnd.ExStyle & 0x400000) && (ppopupmenu->flags & 0x1800000))
+        ppopupmenu->flags ^= 0x1800000;
+
+    if ((ppopupmenu->flags & 0xF800000) && (wFlags & 0x4000) == 0)
+        ppopupmenu->flags |= 0x8000000;
+
+    PlayEventSound(5);
+
+    xxxSetWindowPos(
+        (PWND)pwndPopup,
+        ((pMenuState->flags & 0x100) != 0) - 1,   // HWND_BOTTOM or HWND_TOP, depending on fModelessMenu-ish flag
+        (short)(LONG_PTR)pWnd,
+        (short)((LONG_PTR)pWnd >> 16),
+        0, 0,
+        (~(0x10 * ((pMenuState->flags >> 8) & 0xFF)) & 0x10) | 0x241);
+
+    xxxWindowEvent(EVENT_SYSTEM_MENUPOPUPSTART /* 6 */, (PWND)pwndPopup, -4, 0, 0);
+
+    pMenuState->flags = (pMenuState->flags & ~0x08) | (8 * (bRightAlign & 1));
+
+    iCmd = xxxMNLoop(ppopupmenu, pMenuState, 0, 0);
+
+    if (pMenuState->flags & 0x100)   // fSynchronous-like flag
+    {
+        ThreadUnlock1();
+        goto ReturnResult;
+    }
+
+CleanupAfterLoop:
+    if (ThreadUnlock1() && (pwndPopup->wnd.state & 0x80000000) == 0)  // !WNDS_DESTROYED
+        xxxDestroyWindow((PWND)pwndPopup);
+
+    if (pMenuState)
+        xxxMNEndMenuState(1);
+
+ReturnResult:
+    return bReturnCmd ? iCmd : TRUE;
+
+NotifyExitAndCleanup:
     xxxWindowEvent(5, pWnd, 0, 0, 0);
     xxxMNReleaseCapture();
-    if ( (wFlags & TPM_NONOTIFY) == 0 )
-      xxxSendMessage(pWnd, WM_EXITMENULOOP, (wFlags & 0x200) == 0, 0);
-    pMenuState2 = pMenuState3;
-    bReturnCmd = 1;
-LABEL_43:
-    if ( ThreadUnlock1() && (Window->wnd.state & 0x80000000) == 0 )// WNDS_DESTROYED
-      xxxDestroyWindow(&Window->wnd);
-    if ( pMenuState2 )
-      xxxMNEndMenuState(1);
-    goto LABEL_48;
-  }
-  if ( (pPopupMenu->flags & 0x800) == 0 )
-    xxxSendMessage(pWnd, WM_ENTERMENULOOP, (pPopupMenu->flags & 4) == 0, 0);
-  if ( !xxxMNStartMenu(pPopupMenu, -1) )
-    goto LABEL_69;
-  if ( (pMenuState3->flags & 0x400) != 0 )
-    xxxClientRegisterDragDrop((char)Window->wnd.head.h);
-  if ( (pPopupMenu->flags & 0x800) == 0 )
-  {
-    v14 = *p_spwndNotify;
-    bNoRTL = *p_spwndNotify == 0;
-    tl2.next = gptiCurrent->ptl;
-    gptiCurrent->ptl = &tl2;
-    tl2.pobj = v14;
-    if ( !bNoRTL )
-      ++v14->head.cLockObj;
-    xxxSendMessage(*p_spwndNotify, WM_INITMENUPOPUP, (WPARAM)menu->head.head.h, ((pPopupMenu->flags >> 2) & 1) << 16);
-    ThreadUnlock1();
-    BYTE2(pPopupMenu->flags) |= 0x20u;
-  }
-  v16 = xxxSendMessage(&Window->wnd, MN_SIZEWINDOW, 1u, 0);
-  if ( !v16 )
-    goto LABEL_69;
-  if ( (dword_BF9B5E24 & 1) != 0 )
-  {
-    pMenuState3->flags |= 0x20u;                // fHierarchyDropped
-    menu->fFlags |= 4u;                         // MNF_UNDERLINE
-  }
-  else
-  {
-    menu->fFlags &= ~4u;                        // NOT MNF_UNDERLINE
-  }
-  v17 = (unsigned __int16)v16;
-  v18 = HIWORD(v16) + 2 * gpsi->aiSysMet[SM_CYMAXTRACK];
-  bDown = v17 + 2 * gpsi->aiSysMet[SM_CXMAXTRACK];
-  menua = v18;
-  v19 = (PTHREADINFO)_MonitorFromPoint((POINT)__PAIR64__(y, x), 2);
-  bNoRTL = (pWnd->ExStyle & WS_EX_LAYOUTRTL) == 0;
-  pti2 = v19;
-  if ( !bNoRTL && (wFlags & 4) == 0 )
-    wFlags ^= 8u;
-  if ( (wFlags & 8) != 0 )
-  {
-    x -= bDown;
-    pPopupMenu->flags = pPopupMenu->flags & 0xF07FFFFF | 0x1000000;
-  }
-  else if ( (wFlags & 4) != 0 )
-  {
-    x += bDown / -2;
-  }
-  else
-  {
-    pPopupMenu->flags ^= (pPopupMenu->flags ^ ((((pPopupMenu->flags & 0x10) != 0) + 1) << 23)) & 0xF800000;
-  }
-  if ( (wFlags & 0x20) != 0 )
-  {
-    y -= menua;
-    HIBYTE(pPopupMenu->flags) |= 4u;
-  }
-  else if ( (wFlags & 0x10) != 0 )
-  {
-    y += menua / -2;
-  }
-  else
-  {
-    HIBYTE(pPopupMenu->flags) |= 2u;
-  }
-  if ( (wFlags & 0x3C00) != 0 )
-    pPopupMenu->flags = pPopupMenu->flags & 0xF07FFFFF | ((wFlags & 0x3C00) << 13);
-  pWnda = (PWND)FindBestPos(x, y, bDown, menua, lpTpm != 0 ? &rcExclude : 0, wFlags, pPopupMenu, pti2);
-  if ( (pWnd->ExStyle & 0x400000) != 0 && (pPopupMenu->flags & 0x1800000) != 0 )
-    pPopupMenu->flags ^= 0x1800000u;
-  if ( (pPopupMenu->flags & 0xF800000) != 0 && (wFlags & 0x4000) == 0 )
-    pPopupMenu->flags |= 0x8000000u;
-  PlayEventSound(5);
-  pMenuState2 = pMenuState3;
-  xxxSetWindowPos(
-    &Window->wnd,
-    ((pMenuState3->flags & 0x100) != 0) - 1,
-    (__int16)pWnda,
-    SHIWORD(pWnda),
-    0,
-    0,
-    ~(16 * BYTE1(pMenuState3->flags)) & 0x10 | 0x241);
-  xxxWindowEvent(6, Window, -4, 0, 0);
-  pMenuState2->flags = pMenuState2->flags & 0xFFFFFFF7 | (8 * v36);
-  v22 = xxxMNLoop(pPopupMenu, pMenuState2, 0, 0);
-  if ( (pMenuState2->flags & 0x100) == 0 )      // !fSynchronous
-    goto LABEL_43;
-  ThreadUnlock1();
-LABEL_48:
-  if ( bReturnCmd )
-    return v22;
-  else
-    return 1;
+    if ((wFlags & TPM_NONOTIFY) == 0)
+        xxxSendMessage(pWnd, WM_EXITMENULOOP, (wFlags & 0x200) == 0, 0);
+    bReturnCmd = TRUE;
+    goto CleanupAfterLoop;
+
+Cleanup:
+    return FALSE;
 }
 
 RESULT __stdcall xxxCallHandleMenuMessages(
@@ -1623,7 +1692,7 @@ static PPOPUPMENU MNAllocPopup(BOOL bCreate)
 static BOOL MNDrawHilite(PMENUSTATE pMenuState)
 {
     UINT flags = pMenuState->flags;
-    return (flags & 0x80u) != 0 && (flags & 0xC0000000) == 0 && !MNIsCachedBmpOnly(pMenuState);
+    return (flags & 0x80) != 0 && (flags & 0xC0000000) == 0 && !MNIsCachedBmpOnly(pMenuState);
 }
 
 // @implemented
@@ -1632,31 +1701,117 @@ static BOOL MNIsCachedBmpOnly(PMENUSTATE pMenuState)
     return (pMenuState->flags & 0x20000000) && !pMenuState->ptiMenuStateOwner;
 }
 
-static PHEAD xxxMNDismissWithNotify(PMENUSTATE pMenuState, PMENU pMenu, PITEM pItem, WPARAM wParam, LPARAM lParam)
+// win32k!xxxMNCancel
+void __stdcall xxxMNCancel(PMENUSTATE pMenuState, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    UINT uMsg;
-    HMENU hMenu;
-    UINT wID;
+    PPOPUPMENU pPopupMenu;        // esi
+    UINT       ppmFlags;          // eax - snapshot of pPopupMenu->flags
+    BOOL       bIsMenuBar;        // ebx  - fIsMenuBar      (bit 0)
+    BOOL       bIsSysMenu;        // fIsSysMenu     (bit 2)
+    BOOL       bIsTrackPopup;     // fIsTrackPopup  (bit 3)
+    BOOL       bSynchronous;      // fSynchronous   (bit 8)
+    BOOL       bDoNotify;         // !fNoNotify     (bit 11)
+    PWND       spwndPopupMenu;
+    PWND       spwndNotify;
+    TL         tl, tl2;
+    int        idObject;
+    BOOL       bExitingFromMenuBar;
 
-    if ( (pMenuState->pGlobalPopupMenu->flags & 4) != 0 )
+    pPopupMenu = pMenuState->pGlobalPopupMenu;
+    ppmFlags   = pPopupMenu->flags;
+
+    pMenuState->flags &= ~(/*fInsideMenuLoop*/0x4 | /*fButtonDown*/0x8);
+    pPopupMenu->flags |= /*fDestroyed*/ 0x8000;
+
+    bSynchronous   = (ppmFlags >> 8) & 1;
+    bIsTrackPopup  = (ppmFlags >> 3) & 1;
+    bIsSysMenu     = (ppmFlags >> 2) & 1;
+    bIsMenuBar     =  ppmFlags & 1;
+    bDoNotify      = ((ppmFlags >> 11) & 1) == 0;   // !fNoNotify
+
+    if (gptiCurrent != pMenuState->ptiMenuStateOwner)
+        return;
+
+    if (ppmFlags & /*fInCancel*/ 0x80000)
+        return;   // already being cancelled, reentrancy guard
+
+    pPopupMenu->flags = ppmFlags | 0x80000;   // set fInCancel
+
+    // lock the popup window for the duration of the close
+    spwndPopupMenu = (PWND)pPopupMenu->spwndPopupMenu;
+    tl.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl;
+    tl.pobj = spwndPopupMenu;
+    if (spwndPopupMenu)
+        spwndPopupMenu->head.cLockObj++;
+
+    xxxMNCloseHierarchy(pPopupMenu, pMenuState);
+    xxxMNSelectItem(pPopupMenu, pMenuState, (UINT)-1);
+
+    pMenuState->flags &= ~/*fMenuStarted*/0x1;
+
+    // lock the notify window too
+    spwndNotify = pPopupMenu->spwndNotify;
+    tl2.next = gptiCurrent->ptl;
+    gptiCurrent->ptl = &tl2;
+    tl2.pobj = spwndNotify;
+    if (spwndNotify)
+        spwndNotify->head.cLockObj++;
+
+    xxxMNReleaseCapture();
+
+    if (bIsTrackPopup)
     {
-        hMenu = (HMENU)lParam;
-        uMsg = WM_SYSCOMMAND;
-        goto LABEL_4;
+        xxxWindowEvent(EVENT_SYSTEM_MENUPOPUPEND /* 7 */, pPopupMenu->spwndPopupMenu, -4, 0, 0);
+        xxxDestroyWindow(pPopupMenu->spwndPopupMenu);
     }
-    if (!(pMenuState->flags & 0x20000))
+
+    if (spwndNotify)
     {
-        uMsg = WM_COMMAND;
-        hMenu = NULL;
-LABEL_4:
-        wID = pItem->wID;
-        goto LABEL_5;
+        xxxSendMenuSelect(spwndNotify, 0, (LPARAM *)-1, (UINT)-1);
+
+        if (bIsSysMenu)
+            idObject = OBJID_SYSMENU;       // -1
+        else if (bIsMenuBar)
+            idObject = OBJID_MENU;          // -3
+        else
+            idObject = OBJID_WINDOW;        // 0
+
+        xxxWindowEvent(EVENT_SYSTEM_MENUEND /* 5 */, spwndNotify, idObject, 0, 0);
+
+        if (bDoNotify)
+        {
+            bExitingFromMenuBar = bIsTrackPopup && !bIsSysMenu;
+            xxxSendMessage(spwndNotify, WM_EXITMENULOOP, bExitingFromMenuBar, 0);
+        }
+
+        if (uMsg)
+        {
+            PlayEventSound(6);
+            pMenuState->cmdLast = wParam;
+
+            if (!bSynchronous)
+            {
+                // synchronous popups (or non-toplevel-track or async-capable windows) get
+                // the command posted instead of sent, to avoid blocking inside the menu loop
+                if (bIsSysMenu || !bIsTrackPopup || (spwndNotify->state2 & 0x100))
+                    _PostMessage(spwndNotify, uMsg, wParam, lParam);
+                else
+                    xxxSendMessage(spwndNotify, uMsg, wParam, lParam);
+            }
+        }
+        else
+        {
+            pMenuState->cmdLast = 0;
+        }
     }
-    wID = wParam;
-    hMenu = (HMENU)pMenu->head.head.h;
-    uMsg = WM_MENUCOMMAND;
-LABEL_5:
-    if (zzzMNFadeSelection(pMenu, pItem))
-        zzzStartFade();
-    return xxxMNCancel(pMenuState, uMsg, wID, (LPARAM)hMenu);
+
+    ThreadUnlock1();   // unlocks tl2 (spwndNotify)
+    ThreadUnlock1();   // unlocks tl  (spwndPopupMenu)
+}
+
+// @implemented
+static void xxxMNDismiss(PMENUSTATE pMenuState)
+{
+    xxxMNCancel(pMenuState, 0, 0, 0);
 }
