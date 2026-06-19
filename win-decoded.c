@@ -1213,7 +1213,7 @@ static UINT _GetMenuState(PMENU pMenu, UINT uIDItem, BYTE dwFlags)
     return ret;
 }
 
-static void xxxMNEndMenuState(BOOL bFlag)
+static void xxxMNEndMenuState(BOOL bFree)
 {
     PTHREADINFO pti;          // edi
     PMENUSTATE  pMenuState;   // esi - menu state being torn down
@@ -1229,7 +1229,7 @@ static void xxxMNEndMenuState(BOOL bFlag)
 
     if (pMenuState->pGlobalPopupMenu)
     {
-        if (bFlag)
+        if (bFree)
         {
             MNFreePopup(pMenuState->pGlobalPopupMenu);
         }
@@ -1429,8 +1429,7 @@ static BOOL xxxTrackPopupMenuEx(PMENU menu, UINT wFlags, int x, int y, PWND pWnd
 
     ppopupmenu->flags ^= (ppopupmenu->flags ^ (wFlags >> 7)) & 0x04;
 
-    pMenuState = (PMENUSTATE)xxxMNAllocMenuState(
-        (int)gptiCurrent, (int)ptiWnd, (int)ppopupmenu);
+    pMenuState = (PMENUSTATE)xxxMNAllocMenuState(gptiCurrent, ptiWnd, ppopupmenu);
 
     if (!pMenuState)
     {
@@ -1565,7 +1564,7 @@ CleanupAfterLoop:
         xxxDestroyWindow((PWND)pwndPopup);
 
     if (pMenuState)
-        xxxMNEndMenuState(1);
+        xxxMNEndMenuState(TRUE);
 
 ReturnResult:
     return bReturnCmd ? iCmd : TRUE;
@@ -1947,11 +1946,11 @@ MainDispatch:
                 // inside each branch:
                 switch (uMsg2)
                 {
-                case 0x1C /* hand-decoded from "uMsg2 - 28" == 0 */:
+                case WM_ACTIVATEAPP /*0x1C*/ /* hand-decoded from "uMsg2 - 28" == 0 */:
                     // body unreachable in this excerpt — falls through to default WM_NCCALCSIZE-style path
                     break;
 
-                case 0x46 /* "uMsg2 - 28 - 42" == 0, i.e. uMsg2==0x46 */:
+                case WM_WINDOWPOSCHANGING /*0x46*/ /* "uMsg2 - 28 - 42" == 0, i.e. uMsg2==0x46 */:
                     // animated-fade related message (WM_PRINTCLIENT-adjacent internal id)
                     if ((((PRECT)lprc)[1].right & 0x40) == 0 ||
                         (ppopupmenu->flags & 0x8000000) == 0)
@@ -2132,7 +2131,7 @@ MainDispatch:
 DismissTimerCommon:
             xxxEndMenuLoop(pMenuState, pMenuState->pGlobalPopupMenu);
             if (pMenuState->flags & 0x100 /* fModelessMenu */)
-                xxxMNEndMenuState(1);
+                xxxMNEndMenuState(TRUE);
             break;
 
         case 0x1F4 /* private: drag-notify (only reached if fDragAndDrop already pending) */:
@@ -2631,4 +2630,121 @@ SendToActivePopupOrKeyDown:
     }
 
     return 0;
+}
+
+// @implemented
+BOOL MNEndMenuStateNotify(PMENUSTATE pMenuState)
+{
+    PWND spwndNotify = pMenuState->pGlobalPopupMenu->spwndNotify;
+    if (!spwndNotify)
+        return FALSE;
+    PTHREADINFO pti = spwndNotify->head.pti;
+    if (pti == pMenuState->ptiMenuStateOwner)
+        return FALSE;
+    pti->pMenuState = NULL;
+    return TRUE;
+}
+
+static PMENUSTATE xxxMNAllocMenuState(PTHREADINFO pti1, PTHREADINFO pti2, PPOPUPMENU pPopupMenu)
+{
+  int v3; // ebx
+  PMENUSTATE pMenuState; // esi
+
+  v3 = gdwPUDFlags & 0x2000000;
+  if ( (gdwPUDFlags & 0x2000000) != 0 )
+  {
+    pMenuState = (PMENUSTATE)Win32AllocPoolWithQuota(sizeof(MENUSTATE), 0x746D7355);
+    if ( !pMenuState )
+      return pMenuState;
+  }
+  else
+  {
+    gdwPUDFlags |= 0x2000000u;
+    pMenuState = &gMenuState;
+    GreSetDCOwnerEx(gMenuState.hdcAni, 0x80000002, 0);
+  }
+  ++guSFWLockCount;
+  memset(pMenuState, 0, 0x60u);
+  pMenuState->pGlobalPopupMenu = pPopupMenu;
+  pMenuState->ptiMenuStateOwner = pti1;
+  pMenuState->pmnsPrev = pti1->pMenuState;
+  pti1->pMenuState = pMenuState;
+  if ( pti2 != pti1 )
+    pti2->pMenuState = pMenuState;
+  if ( !v3 )
+    return pMenuState;
+  pMenuState->hdcAni = 0;
+  if ( MNSetupAnimationDC((int)pMenuState) )
+    return pMenuState;
+  xxxMNEndMenuState(1);
+  return 0;
+}
+
+void __stdcall xxxMNEndMenuState(BOOL bFree)
+{
+  PTHREADINFO pti; // edi
+  PMENUSTATE pMenuState; // esi
+  PMENUSTATE pMenuState2; // eax
+
+  pti = gptiCurrent;
+  pMenuState = gptiCurrent->pMenuState;
+  if ( !pMenuState->dwLockCount )
+  {
+    MNEndMenuStateNotify(gptiCurrent->pMenuState);
+    if ( pMenuState->pGlobalPopupMenu )
+    {
+      if ( bFree )
+        MNFreePopup(pMenuState->pGlobalPopupMenu);
+      else
+        BYTE2(pMenuState->pGlobalPopupMenu->flags) &= ~1u;
+    }
+    UnlockMFMWFPWindow(&pMenuState->uButtonDownHitArea);
+    UnlockMFMWFPWindow(&pMenuState->uDraggingHitArea);
+    pti->pMenuState = pMenuState->pmnsPrev;
+    if ( (pMenuState->flags & 0x100) == 0 )
+      --guSFWLockCount;
+    if ( pMenuState->hbmAni )
+      MNDestroyAnimationBitmap(pMenuState);
+    if ( pMenuState == &gMenuState )
+    {
+      HIBYTE(gdwPUDFlags) &= ~2u;
+      GreSetDCOwnerEx(gMenuState.hdcAni, 0, 0);
+    }
+    else
+    {
+      if ( pMenuState->hdcAni )
+        GreDeleteDC(pMenuState->hdcAni);
+      ExFreePoolWithTag(pMenuState, 0);
+    }
+    pMenuState2 = pti->pMenuState;
+    if ( pMenuState2 )
+    {
+      if ( (pMenuState2->flags & 0x100) != 0 )
+        xxxActivateThisWindow(pMenuState2->pGlobalPopupMenu->spwndActivePopup, 0, 0);
+      else
+        xxxMNSetCapture(pMenuState2->pGlobalPopupMenu);
+    }
+  }
+}
+
+void __stdcall MNFreePopup(PPOPUPMENU pPopupMenu)
+{
+  PMENUWND pMenuWnd; // eax
+
+  if ( pPopupMenu == pPopupMenu->ppopupmenuRoot )
+    MNFlushDestroyedPopups(pPopupMenu, 1);
+  pMenuWnd = (PMENUWND)pPopupMenu->spwndPopupMenu;
+  if ( pMenuWnd && (pMenuWnd->wnd.fnid & 0x3FFF) == 0x29C && pPopupMenu != &gpopupMenu )
+    pMenuWnd->ppopupmenu = 0;
+  HMAssignmentUnlock((PVOID *)&pPopupMenu->spwndPopupMenu);
+  HMAssignmentUnlock((PVOID *)&pPopupMenu->spwndNextPopup);
+  HMAssignmentUnlock((PVOID *)&pPopupMenu->spwndPrevPopup);
+  UnlockPopupMenu(pPopupMenu, &pPopupMenu->spmenu);
+  UnlockPopupMenu(pPopupMenu, &pPopupMenu->spmenuAlternate);
+  HMAssignmentUnlock((PVOID *)&pPopupMenu->spwndNotify);
+  HMAssignmentUnlock((PVOID *)&pPopupMenu->spwndActivePopup);
+  if ( pPopupMenu == &gpopupMenu )
+    BYTE2(gdwPUDFlags) &= ~0x80u;
+  else
+    ExFreePoolWithTag(pPopupMenu, 0);
 }
