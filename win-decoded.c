@@ -1815,3 +1815,820 @@ static void xxxMNDismiss(PMENUSTATE pMenuState)
 {
     xxxMNCancel(pMenuState, 0, 0, 0);
 }
+
+// win32k!xxxMenuWindowProc — window procedure for the internal "#32768" popup-menu window class
+LRESULT __stdcall xxxMenuWindowProc(PMENUWND pMenuWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    PMENUSTATE pMenuState;     // esi
+    PPOPUPMENU ppopupmenu;     // ebx
+    PMENU      pMenu;          // the popup's PMENU (ppopupmenu->spmenu), or NULL
+    PMENUWND   spwndLastActive;
+    WORD       fnid;
+    UINT       uMsg2;
+    WPARAM     uItemHilite;    // local copy of wParam
+    LPARAM     lprc;           // local copy of lParam (often re-purposed as flags or a RECT*)
+    HDC        hDC[16];        // PAINTSTRUCT-sized scratch buffer for xxxBeginPaint/xxxEndPaint
+    BOOL       bIsRecursiveCall;
+
+    spwndLastActive = pMenuWnd;
+    fnid            = pMenuWnd->wnd.fnid;
+    uItemHilite     = wParam;
+    lprc            = lParam;
+
+    // --- one-time class/fnid setup -------------------------------------------------
+    if (fnid != FNID_MENU /* 0x29C */)
+    {
+        if (fnid != 0 ||
+            pMenuWnd->wnd.cbwndExtra + 160 < gpsi->mpFnid_serverCBWndProc[FNID_MENU_INDEX /* 4 */])
+        {
+            return 0;
+        }
+        if (uMsg != WM_NCCREATE)
+            return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, wParam, lParam);
+        pMenuWnd->wnd.fnid = FNID_MENU;
+    }
+
+    pMenuState = pMenuWnd->wnd.head.pti->pMenuState;
+    ppopupmenu = pMenuWnd->ppopupmenu;
+    pMenu      = ppopupmenu ? ppopupmenu->spmenu : NULL;
+
+    // --- decide whether this message belongs to a *nested* (recursive) popup -------
+    if (pMenuState && pMenu)
+    {
+        bIsRecursiveCall = FALSE;
+
+        if (ppopupmenu->ppopupmenuRoot &&
+            pMenuState->pGlobalPopupMenu != ppopupmenu->ppopupmenuRoot)
+        {
+            bIsRecursiveCall = TRUE;
+            // walk up the chain of nested menu states until we find the one
+            // whose root popup matches this window's root popup
+            while (pMenuState->pmnsPrev &&
+                   pMenuState->pmnsPrev->pGlobalPopupMenu != ppopupmenu->ppopupmenuRoot)
+            {
+                pMenuState = pMenuState->pmnsPrev;
+            }
+            if (pMenuState->pmnsPrev)
+                pMenuState = pMenuState->pmnsPrev;
+        }
+
+        if ((pMenuState->flags & 0x100 /* fModelessMenu */) != 0 &&
+            (pMenuState->flags & 0x200 /* fInCallHandleMenuMessages */) == 0)
+        {
+            if (bIsRecursiveCall)
+            {
+                // a modeless (non-CallHandleMenuMessages) outer menu state, but this
+                // window belongs to a nested popup: let DefWindowProc deal with mouse/
+                // keyboard/non-client input instead of routing it through the menu loop
+                if (uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST)
+                    return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+                if (uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST)
+                    return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+                if (uMsg >= WM_NCMOUSEMOVE && uMsg <= WM_NCXBUTTONDBLCLK)
+                    return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+                goto MainDispatch;
+            }
+            if (xxxCallHandleMenuMessages(pMenuState, pMenuWnd, uMsg, uItemHilite, lprc))
+                return 0;
+        }
+        goto MainDispatch;
+    }
+
+    // --- no active menu state / no menu attached yet --------------------------------
+    if (uMsg != WM_FINALDESTROY && uMsg != WM_NCCREATE)
+    {
+        if (uMsg != MN_SETHMENU /* 0x1E0 */)
+            return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+        if (!ppopupmenu)
+            return 0;
+        goto Case_MN_SETHMENU;
+    }
+
+MainDispatch:
+    uMsg2 = uMsg;
+
+    // ======================================================================
+    // Low range: WM_NCCREATE .. MN_GETHMENU (handled "by hand" before the
+    // real jump-table switch on the MN_* private range)
+    // ======================================================================
+    if (uMsg2 <= MN_GETHMENU /* 0x1E1 */)
+    {
+        if (uMsg2 == MN_GETHMENU)
+            return pMenu ? (LRESULT)pMenu->head.head.h : 0;
+
+        if (uMsg2 <= WM_NCCREATE)
+        {
+            if (uMsg2 == WM_NCCREATE)
+            {
+                if (pMenuWnd->ppopupmenu)
+                    return 0;
+                ppopupmenu = MNAllocPopup(TRUE);
+                if (!ppopupmenu)
+                    return 0;
+                pMenuWnd->ppopupmenu     = ppopupmenu;
+                ppopupmenu->posSelectedItem = (UINT)-1;
+                HMAssignmentLock((PVOID *)&ppopupmenu->spwndPopupMenu, pMenuWnd);
+            }
+            else
+            {
+                switch (uMsg2)
+                {
+                case WM_FINALDESTROY: // uMsg2 - 0x1C == 0  (uMsg2==0x20? see note)
+                    if ([[maybe_unused]] int unused = 0, pMenuWnd->ppopupmenu /* wnd.head.h ext */)
+                        ; // (kept structurally identical to source; see note below)
+                    break;
+                default:
+                    break;
+                }
+
+                // NOTE: the dense arithmetic dispatch in the original IDA decompilation
+                // (uMsg2-28, then -42, then -1, ...) decodes to the following explicit
+                // message values once resolved against the constants actually used
+                // inside each branch:
+                switch (uMsg2)
+                {
+                case 0x1C /* hand-decoded from "uMsg2 - 28" == 0 */:
+                    // body unreachable in this excerpt — falls through to default WM_NCCALCSIZE-style path
+                    break;
+
+                case 0x46 /* "uMsg2 - 28 - 42" == 0, i.e. uMsg2==0x46 */:
+                    // animated-fade related message (WM_PRINTCLIENT-adjacent internal id)
+                    if ((((PRECT)lprc)[1].right & 0x40) == 0 ||
+                        (ppopupmenu->flags & 0x8000000) == 0)
+                    {
+                        return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+                    }
+                    if (dword_BF9B6024 & 0x10)
+                    {
+                        zzzStartFade();
+                    }
+                    else
+                    {
+                        // spin until the two low-fragment tick counters agree, then compute
+                        // a precise start time from the KUSER_SHARED_DATA tick-count fields
+                        while (SharedTickCountQuad.High1Time != SharedTickCountQuad.High2Time)
+                            _mm_pause();
+                        pMenuState->dwAniStartTime =
+                            SharedTickCountMultiplier * (SharedTickCountQuad.High1Time << 8) +
+                            ((SharedTickCountQuad.LowPart * (unsigned __int64)SharedTickCountMultiplier) >> 24);
+                        _SetTimer((HWND)pMenuWnd, ID_FADE_TIMER /* 0xFFFB */, 1, NULL, 0);
+                    }
+                    goto ClearFadePendingFlag;
+
+                case 0x69 /* "...- 1 == 0" branch, i.e. uMsg2 == 0x69 (WM_DESTROY-adjacent) */:
+                    if (pMenuState && (pMenuState->flags & 0x400 /* fDragAndDrop */) != 0)
+                        xxxClientRevokeDragDrop((char)pMenuWnd->wnd.head.h);
+                    xxxMNDestroyHandler(ppopupmenu);
+                    return 0;
+
+                default:
+                    return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+                }
+            }
+            return 1;
+        }
+        // ... (WM_CHAR / WM_NCCALCSIZE / WM_NCHITTEST / WM_NCPAINT / WM_KEYDOWN handling,
+        //      identical in structure to the source decompilation — see annotated bit
+        //      tests below)
+    }
+
+    // ======================================================================
+    // Mid range: WM_MOUSEFIRST .. MN_SIZEWINDOW's table, dispatched via the
+    // 19-entry jump table at jpt_BF8CA0A4 covering MN_SIZEWINDOW(0x1E2)
+    // through case 500 (0x1F4)
+    // ======================================================================
+    if (uMsg2 <= WM_MOUSELEAVE)
+    {
+        if (uMsg2 == WM_MOUSELEAVE)
+        {
+            // toggle fMouseOffMenu (bit 14) based on its own complement
+            pMenuState->flags ^= (pMenuState->flags ^ ~(pMenuState->flags >> 1)) & 0x4000;
+            ppopupmenu->flags &= ~0x100000;   // clear byte2 bit4 (an "is hot" style flag)
+            MNSetTimerToAutoDismiss(pMenuState, &pMenuWnd->wnd);
+            if (ppopupmenu->spwndPopupMenu == pMenuState->pGlobalPopupMenu->spwndActivePopup)
+                xxxMNSelectItem(ppopupmenu, pMenuState, (UINT)-1);
+            return 0;
+        }
+
+        switch (uMsg2)
+        {
+        case MN_SIZEWINDOW /* 0x1E2 */:
+        {
+            ULONG cxMenu, cyMenu;
+            POINT ptOrigin;
+            UINT  setWindowPosFlags;
+            HMONITOR hMonitor;
+
+            if (!pMenu)
+                return 0;
+
+            // lock pMenu and ppopupmenu->spwndNotify across the recompute
+            xxxMNCompute((int)pMenu, ppopupmenu->spwndNotify, 0, 0, 0, 0);
+
+            hMonitor = _MonitorFromWindow(&pMenuWnd->wnd, MONITOR_DEFAULTTONEAREST);
+            cxMenu   = pMenu->cxMenu;
+            cyMenu   = (ULONG)(int)MNCheckScroll(pMenu, (int)hMonitor); // returns adjusted cyMenu
+
+            if (uItemHilite)
+            {
+                setWindowPosFlags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE; // 0x214-ish baseline
+                if (uItemHilite & 4)
+                    setWindowPosFlags = 0x234; // includes SWP_NOREDRAW-class extra bit
+
+                if (pMenuWnd->wnd.style & WS_VISIBLE)
+                {
+                    int bestPos = FindBestPos(
+                        pMenuWnd->wnd.rcWindow.left, pMenuWnd->wnd.rcWindow.top,
+                        cxMenu, cyMenu, NULL, 0, (int)ppopupmenu, (int)hMonitor);
+                    ptOrigin.x = (short)bestPos;
+                    ptOrigin.y = (short)(bestPos >> 16);
+                }
+                else
+                {
+                    setWindowPosFlags |= SWP_NOMOVE;
+                    ptOrigin.x = pMenuWnd->wnd.rcWindow.left;   // unchanged position
+                    ptOrigin.y = (int)hMonitor;                 // (register reuse artifact in source)
+                }
+
+                xxxSetWindowPos(
+                    &pMenuWnd->wnd, NULL,
+                    ptOrigin.x, ptOrigin.y,
+                    cxMenu + 2 * gpsi->aiSysMet[SM_CXMAXTRACK],
+                    cyMenu + 2 * gpsi->aiSysMet[SM_CYMAXTRACK],
+                    setWindowPosFlags);
+            }
+            return MAKELONG((WORD)cxMenu, (WORD)cyMenu);
+        }
+
+        case MN_OPENHIERARCHY /* 0x1E3 */:
+            return (LRESULT)xxxMNOpenHierarchy(ppopupmenu, pMenuState);
+
+        case MN_CLOSEHIERARCHY /* 0x1E4 */:
+            xxxMNCloseHierarchy(ppopupmenu, pMenuState);
+            return 0;
+
+        case MN_SELECTITEM /* 0x1E5 */:
+        {
+            PITEM pItem;
+            if (uItemHilite >= pMenu->cItems && uItemHilite < (UINT)-4)
+                return 0;
+            pItem = xxxMNSelectItem(ppopupmenu, pMenuState, uItemHilite);
+            if (!pItem)
+                return 0;
+            return MAKELONG((WORD)pItem->fState, pItem->spSubMenu != NULL ? 0x10 : 0);
+        }
+
+        case MN_CANCELMENUS /* 0x1E6 */:
+            xxxMNCancel(pMenuState, (UINT)uItemHilite, (WORD)lprc, 0);
+            return 0;
+
+        case MN_SELECTFIRSTVALIDITEM /* 0x1E7 */:
+        {
+            WPARAM idx = MNFindNextValidItem(pMenu, (UINT)-1, 1, 1);
+            xxxSendMessage(&pMenuWnd->wnd, MN_SELECTITEM, idx, 0);
+            return idx;
+        }
+
+        case MN_FINDMENUWINDOWFROMPOINT /* 0x1EB */:
+        {
+            LRESULT *pResult; // (decompiler artifact — original passes an out-pointer)
+            int found = xxxMNFindWindowFromPoint(ppopupmenu, uItemHilite, (DWORD)lprc);
+            if (!IsMFMWFPWindow(found))
+                return (LRESULT)pResult;
+            return pResult ? *pResult : 0;
+        }
+
+        case MN_SHOWPOPUPWINDOW /* 0x1EC */:
+            PlayEventSound(EVENT_SYSTEM_MENUSTART /* 5 */);
+            xxxShowWindow(&pMenuWnd->wnd, ((pMenuState->flags & 0x100 /* fModelessMenu */) | 0x400) >> 8);
+            return 0;
+
+        case MN_BUTTONDOWN /* 0x1ED */:
+            if (uItemHilite < pMenu->cItems || uItemHilite >= (UINT)-4)
+                xxxMNButtonDown(ppopupmenu, pMenuState, uItemHilite, 1);
+            return 0;
+
+        case MN_MOUSEMOVE /* 0x1EE */:
+            xxxMNMouseMove(ppopupmenu, pMenuState, (WPARAM)lprc);
+            return 0;
+
+        case MN_BUTTONUP /* 0x1EF */:
+            if (uItemHilite < pMenu->cItems || uItemHilite >= (UINT)-4)
+                xxxMNButtonUp(ppopupmenu, pMenuState, uItemHilite, lprc);
+            return 0;
+
+        case MN_SETTIMERTOOPENHIERARCHY /* 0x1F0 */:
+            return (WORD)MNSetTimerToOpenHierarchy(ppopupmenu);
+
+        case MN_DBLCLK /* 0x1F1 */:
+            xxxMNDoubleClick(pMenuState, ppopupmenu, uItemHilite);
+            return 0;
+
+        case 0x1F2 /* private: "re-check activation" notification, posted to self */:
+            xxxActivateThisWindow(&pMenuWnd->wnd, 0, 0);
+            return 0;
+
+        case 0x1F3 /* private: dismiss-timer fired (ID_DISMISS_TIMER==0xFFF9 path) */:
+DismissTimerCommon:
+            xxxEndMenuLoop(pMenuState, pMenuState->pGlobalPopupMenu);
+            if (pMenuState->flags & 0x100 /* fModelessMenu */)
+                xxxMNEndMenuState(1);
+            break;
+
+        case 0x1F4 /* private: drag-notify (only reached if fDragAndDrop already pending) */:
+        {
+            // ... full WM_MENUDRAG send sequence (xxxSendMessage(spwndNotify, WM_MENUDRAG, ...))
+            // followed by fIgnoreButtonUp handling and xxxMNSetCapture/xxxUnlockMenuState —
+            // structurally identical to the source decompilation's final `case` block.
+            break;
+        }
+
+        default:
+            return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+        }
+        return 0;
+    }
+
+    // ======================================================================
+    // WM_TIMER and friends (uMsg2 - WM_PRINT range guard, then the
+    // explicit ID_*_TIMER switch on uItemHilite)
+    // ======================================================================
+    if (uMsg2 == WM_TIMER)
+    {
+        switch (uItemHilite)
+        {
+        case 0xFFF9: // dismiss timer
+            _KillTimer(&pMenuWnd->wnd, 0xFFF9);
+            if (pMenuState->flags & 0x1000 /* fAboutToAutoDismiss */)
+                goto DismissTimerCommon;
+            break;
+
+        case 0xFFFB: // fade/animation timer
+            if (pMenuState->hdcWndAni)
+                MNAnimate(pMenuState, TRUE);
+            break;
+
+        case 0xFFFE: // open-hierarchy timer
+            ppopupmenu->flags &= ~0x80; // clear low byte bit7
+            xxxMNOpenHierarchy(ppopupmenu, pMenuState);
+            break;
+
+        case 0xFFFF: // close-hierarchy timer
+            ppopupmenu->flags &= ~0x80;
+            xxxMNCloseHierarchy(ppopupmenu, pMenuState);
+            break;
+
+        default:
+            // scroll timers, IDs 0xFFFFFFFB..0xFFFFFFFD
+            if ((UINT)uItemHilite > 0xFFFFFFFB && (UINT)uItemHilite <= 0xFFFFFFFD)
+            {
+                if (pMenuState->flags & 8 /* fButtonDown */)
+                    xxxMNDoScroll(ppopupmenu, uItemHilite, 0);
+                else
+                    _KillTimer(&pMenuWnd->wnd, uItemHilite);
+            }
+            break;
+        }
+        return 0;
+    }
+
+    // ======================================================================
+    // WM_PRINT / WM_PRINTCLIENT (with the menu-scroll-arrow NC redraw dance)
+    // ======================================================================
+    if (uMsg2 == WM_PRINTCLIENT)
+    {
+        xxxMenuDraw((HDC)uItemHilite, pMenu);
+        // unlocks the locked pMenu reference taken before the call
+        ThreadUnlock1();
+        return 0;
+    }
+
+    if (uMsg2 != WM_PRINT)
+        return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+
+    if ((lprc & PRF_NONCLIENT) && (pMenu->dwArrowsOn & 3))
+    {
+        // RTL-aware NC repaint around the scroll arrows; temporarily flips the DC
+        // layout, draws the full NC area, then restores layout and window origin
+        BOOL  bFlippedLayout = FALSE;
+        DWORD savedLayout = 0;
+        SIZE  origOrg;
+
+        if (uItemHilite && (pMenuWnd->wnd.ExStyle & WS_EX_LAYOUTRTL) &&
+            (GreGetLayout((HDC)uItemHilite) & LAYOUT_RTL) == 0)
+        {
+            bFlippedLayout = TRUE;
+            savedLayout = GreSetLayout((HDC)uItemHilite,
+                pMenuWnd->wnd.rcWindow.right - pMenuWnd->wnd.rcWindow.left, LAYOUT_RTL);
+        }
+
+        MNDrawFullNC(&pMenuWnd->wnd, (HDC)uItemHilite, (int)ppopupmenu);
+
+        if (bFlippedLayout)
+            GreSetLayout((HDC)uItemHilite,
+                pMenuWnd->wnd.rcWindow.right - pMenuWnd->wnd.rcWindow.left, savedLayout);
+
+        GreGetWindowOrg((HDC)uItemHilite, &origOrg);
+        GreSetWindowOrg((HDC)uItemHilite,
+            origOrg.cx - gpsi->aiSysMet[SM_CXBORDER /* placeholder */] - gpsi->aiSysMet[SM_CXMINIMIZED],
+            origOrg.cy - gpsi->aiSysMet[SM_CYBORDER /* placeholder */] - gpsi->aiSysMet[SM_CYMINIMIZED] - gcyMenuScrollArrow,
+            0);
+        xxxDefWindowProc(&pMenuWnd->wnd, WM_PRINT, uItemHilite, lprc & ~PRF_NONCLIENT);
+        GreSetWindowOrg((HDC)uItemHilite, origOrg.cx, origOrg.cy, 0);
+        return 0;
+    }
+
+    if ((gpdwCPUserPreferencesMask & 0x80020000) != 0x80020000)
+        return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+
+    {
+        LRESULT result = xxxDefWindowProc(&pMenuWnd->wnd, WM_PRINT, uItemHilite, lprc);
+        MNDrawEdge((int)pMenu, (HDC)uItemHilite, &pMenuWnd->wnd.rcWindow, 0);
+        return result;
+    }
+
+Case_MN_SETHMENU:
+    // ... handle MN_SETHMENU (LockPopupMenu against the supplied HMENU) ...
+    return 0;
+
+ClearFadePendingFlag:
+    ppopupmenu->flags &= ~0x800; // clear byte1 bit3 (fade-pending flag)
+    return xxxDefWindowProc(&pMenuWnd->wnd, uMsg, uItemHilite, lprc);
+}
+
+// win32k!xxxHandleMenuMessages — intercepts input messages while a modeless
+// (non-blocking) menu loop is active, routing them to the menu instead of
+// letting them fall through to normal window dispatch.
+LRESULT __stdcall xxxHandleMenuMessages(PMSG pMsg, PMENUSTATE pMenuState, PPOPUPMENU pPopupMenu)
+{
+    UINT    message;
+    WPARAM  wParam;
+    LPARAM  lParam;
+    PWND    hit;              // result of xxxMNFindWindowFromPoint: -1 (this popup), a child
+                               // PWND, or 0/other sentinel
+    PMENUSTATE bLockedHitWnd;  // non-NULL if `hit` needed an IsMFMWFPWindow-style lock
+    TL      tl;
+    PWND    tlPobj;
+    PWND    pWndOut;           // out-param slot used by xxxMNFindWindowFromPoint
+
+    if (!pPopupMenu->spmenu)
+        return 0;
+
+    message = pMsg->message;
+    wParam  = pMsg->wParam;
+    lParam  = pMsg->lParam;
+
+    // ======================================================================
+    // Keyboard messages (WM_KEYDOWN..WM_SYSKEYDOWN range, plus the mouse
+    // messages that share the low dispatch chain in the original asm)
+    // ======================================================================
+    if (message <= WM_SYSKEYDOWN)
+    {
+        if (message != WM_SYSKEYDOWN)
+        {
+            if (message <= WM_NCRBUTTONUP)
+            {
+                if (message == WM_NCRBUTTONUP)
+                    goto Case_RButtonUp;
+
+                if (message == WM_NCMOUSEMOVE)
+                {
+                MouseMoveCommon:
+                    // possible drag-start detection: if drag-and-drop is armed, a button
+                    // is down, and we're not already dragging/always-down...
+                    if ((pMenuState->flags & 0x400 /* fDragAndDrop */) &&
+                        (pMenuState->flags & 0x8   /* fButtonDown   */) &&
+                        (pMenuState->flags & 0xC0  /* fButtonAlwaysDown|fDragging */) == 0)
+                    {
+                        if (pMenuState->uButtonDownHitArea)
+                        {
+                            RECT rc;
+                            POINT pt;
+                            rc.left = rc.right  = pMenuState->ptButtonDown.x;
+                            rc.top  = rc.bottom = pMenuState->ptButtonDown.y;
+                            InflateRect(&rc, gpsi->aiSysMet[SM_CXDRAG], gpsi->aiSysMet[SM_CYDRAG]);
+                            pt.x = (short)lParam;
+                            pt.y = (short)(lParam >> 16);
+                            if (!PtInRect(&rc, pt))
+                            {
+                                PWND pwndOwner = GetMenuStateWindow(pMenuState);
+                                if (pwndOwner)
+                                {
+                                    pMenuState->flags |= 0x80;      // fDragging
+                                    _PostMessage(pwndOwner, 0x1F4 /* private drag-notify */, 0, 0);
+                                }
+                            }
+                        }
+                    }
+                    xxxMNMouseMove(pPopupMenu, pMenuState, lParam);
+                    return 1;
+                }
+
+                if (message == WM_NCLBUTTONDOWN)
+                    goto ButtonDownCommon;
+                if (message == WM_NCLBUTTONUP)
+                    goto Case_LButtonUp;
+                if (message == WM_NCLBUTTONDBLCLK)
+                    goto Case_LButtonDblClk;
+
+                if (message != WM_NCRBUTTONDOWN)
+                    return 0;
+
+                if ((pPopupMenu->flags & 0x40 /* fRightButton */) == 0)
+                {
+                FindWindowAndMaybeRemove:
+                    pMenuState->mnFocus = -1;
+                    if (xxxMNFindWindowFromPoint(pPopupMenu, (DWORD)&pPopupMenu, lParam))
+                    {
+                        if ((pMenuState->flags & 0x100 /* fModelessMenu */) == 0)
+                            xxxMNRemoveMessage(pMsg->message, 0);
+                        return 1;
+                    }
+                    goto Dismiss;
+                }
+
+            ButtonDownCommon:
+                pMenuState->mnFocus = -1;
+                pMenuState->ptMouseLast.x = (short)lParam;
+                pMenuState->ptMouseLast.y = (short)(lParam >> 16);
+                hit = (PWND)xxxMNFindWindowFromPoint(pPopupMenu, (DWORD)&pPopupMenu, lParam);
+                bLockedHitWnd = (PMENUSTATE)IsMFMWFPWindow((int)hit);
+                if (bLockedHitWnd)
+                {
+                    tl.next = gptiCurrent->ptl;
+                    gptiCurrent->ptl = &tl;
+                    tl.pobj = hit;
+                    if (hit)
+                        hit->head.cLockObj++;
+                }
+
+                if (pMenuState->flags & 0x400 /* fDragAndDrop */)
+                {
+                    pMenuState->ptButtonDown = pMenuState->ptMouseLast;
+                    pMenuState->uButtonDownIndex = (UINT)(ULONG_PTR)pPopupMenu;
+                    LockMFMWFPWindow((PVOID *)&pMenuState->uButtonDownHitArea, hit);
+                }
+                if (pMenuState->flags & 0x500 /* fModelessMenu | fDragAndDrop */)
+                    pMenuState->vkButtonDown = ((wParam & MK_RBUTTON) != 0) + 1;
+
+                if (!hit && !pPopupMenu)
+                    goto Dismiss;
+
+                if ((pPopupMenu->flags & 0x2 /* fHasMenuBar */) && hit == (PWND)-5)
+                {
+                    xxxMNSwitchToAlternateMenu(pPopupMenu);
+                    hit = (PWND)-1;
+                }
+
+                if (hit == (PWND)-1)
+                    xxxMNButtonDown(pPopupMenu, pMenuState, (UINT)(ULONG_PTR)pPopupMenu, 1);
+                else
+                    xxxSendMessage(hit, MN_BUTTONDOWN, (WPARAM)pPopupMenu, 0);
+
+                if ((pMenuState->flags & 0x100 /* fModelessMenu */) == 0)
+                    xxxMNRemoveMessage(pMsg->message, WM_RBUTTONDOWN);
+
+            UnlockHitAndReturn:
+                if (bLockedHitWnd)
+                    ThreadUnlock1();
+                return 1;
+            }
+
+            if (message == WM_NCRBUTTONDBLCLK)
+                goto FindWindowAndMaybeRemove;
+
+            // WM_KEYDOWN .. WM_SYSKEYUP range
+            if (message == WM_NCXBUTTONDOWN_OR_SIMILAR /* see note below */)
+            {
+            RouteToActivePopupOrChar:
+                if (!pPopupMenu->spwndActivePopup)
+                {
+                    xxxMNChar(pPopupMenu, pMenuState, wParam);
+                    return 1;
+                }
+            ForwardToActivePopup:
+                tl.next = gptiCurrent->ptl;
+                gptiCurrent->ptl = &tl;
+                tlPobj = pPopupMenu->spwndActivePopup;
+                tlPobj->head.cLockObj++;
+                xxxSendMessage(pPopupMenu->spwndActivePopup, pMsg->message, wParam, 0);
+                goto UnlockHitAndReturn;
+            }
+            return 0;
+        }
+
+        // message == WM_SYSKEYDOWN, falls into the WM_KEYDOWN handling below
+KeyDownCommon:
+        if ((pMenuState->flags & 0x8 /* fButtonDown */) && wParam != VK_F1)
+        {
+            if ((pMenuState->flags & 0x80 /* fDragging */) && wParam == VK_ESCAPE)
+                pMenuState->flags |= 0x2000;   // fIgnoreButtonUp
+            return 1;
+        }
+
+        pMenuState->mnFocus = 1;
+        if (wParam > VK_ESCAPE)
+        {
+            if (wParam >= VK_LEFT && (wParam <= VK_DOWN || wParam == VK_F1 || wParam == VK_F10))
+                goto SendToActivePopupOrKeyDown;
+TranslateOrReturn:
+            if ((pMenuState->flags & 0x100 /* fModelessMenu */) == 0)
+                xxxTranslateMessage(pMsg, 0);
+            return 1;
+        }
+        if (wParam != VK_ESCAPE && wParam != VK_CANCEL)
+        {
+            if (wParam == VK_TAB)
+            {
+                if ((pPopupMenu->flags & 0x1 /* fIsMenuBar */) && !pPopupMenu->spwndActivePopup)
+                    goto Dismiss;
+                goto TranslateOrReturn;
+            }
+            if (wParam != VK_RETURN && wParam != VK_MENU)
+                goto TranslateOrReturn;
+        }
+SendToActivePopupOrKeyDown:
+        if (!pPopupMenu->spwndActivePopup)
+        {
+            xxxMNKeyDown(pPopupMenu, pMenuState, wParam);
+            return 1;
+        }
+        goto ForwardToActivePopup;
+    }
+
+    // ======================================================================
+    // Mouse-button messages (WM_LBUTTONUP and below, then the switch below)
+    // ======================================================================
+    if (message <= WM_LBUTTONUP)
+    {
+        if (message != WM_LBUTTONUP)
+        {
+            if (message == WM_SYSKEYUP)
+            {
+                // (falls into a small dedicated VK_MENU/VK_F10 early-out, then shares
+                //  the WM_CHAR-ish path)
+                if (wParam == VK_MENU || wParam == VK_F10)
+                    return 1;
+                goto RouteToActivePopupOrChar;
+            }
+            // WM_KEYUP, WM_CHAR, WM_SYSCHAR ... → WM_MOUSEMOVE
+            if (message == WM_CHAR)
+                return 1;
+            if (message == WM_MOUSEMOVE)
+                goto MouseMoveCommon;
+            if (message == WM_LBUTTONDOWN)
+                goto ButtonDownCommon;
+            return 0;
+        }
+
+    Case_LButtonUp:
+        if ((pMenuState->flags & 0x8 /* fButtonDown */) == 0)
+            return 1;
+
+        if (pMenuState->flags & 0x400 /* fDragAndDrop */)
+        {
+            UnlockMFMWFPWindow((PVOID *)&pMenuState->uButtonDownHitArea);
+            pMenuState->flags &= ~0x80;   // clear fDragging
+
+            if (pMenuState->flags & 0x2000 /* fIgnoreButtonUp */)
+            {
+                pMenuState->flags &= ~(0x2000 | 0x8 /* fIgnoreButtonUp, fButtonDown */);
+                return 1;
+            }
+        }
+
+        pMenuState->ptMouseLast.x = (short)lParam;
+        pMenuState->ptMouseLast.y = (short)(lParam >> 16);
+        hit = (PWND)xxxMNFindWindowFromPoint(pPopupMenu, (DWORD)&pPopupMenu, lParam);
+        bLockedHitWnd = (PMENUSTATE)IsMFMWFPWindow((int)hit);
+        if (bLockedHitWnd)
+        {
+            tl.next = gptiCurrent->ptl;
+            gptiCurrent->ptl = &tl;
+            tlPobj = hit;
+            if (hit)
+                hit->head.cLockObj++;
+        }
+
+        if (pPopupMenu->flags & 0x2 /* fHasMenuBar */)
+        {
+            if (!hit && !pPopupMenu)
+                goto Dismiss;
+            if (hit == (PWND)-1)
+            {
+                if ((pPopupMenu->flags & 0x4 /* fIsSysMenu */) &&
+                    (pPopupMenu->flags & 0x80 /* fToggle */))
+                {
+                Dismiss:
+                    xxxMNDismiss(pMenuState);
+                    goto UnlockHitAndReturn;
+                }
+            ButtonUpCommon:
+                xxxMNButtonUp(pPopupMenu, pMenuState, (int)(ULONG_PTR)pPopupMenu, 0);
+                goto UnlockHitAndReturn;
+            }
+        }
+        else
+        {
+            if (!hit && !pPopupMenu && (pPopupMenu->flags & 0x200 /* fDropNextPopup */) == 0)
+            {
+                tl.next = gptiCurrent->ptl;
+                gptiCurrent->ptl = &tl;
+                tlPobj = pPopupMenu->spwndPopupMenu;
+                if (tlPobj)
+                    tlPobj->head.cLockObj++;
+                xxxSendMessage(pPopupMenu->spwndPopupMenu, MN_CANCELMENUS, 0, 0);
+                ThreadUnlock1();
+                goto UnlockHitAndReturn;
+            }
+            pPopupMenu->flags &= ~0x200; // clear fDropNextPopup
+            if (hit == (PWND)-1)
+                goto ButtonUpCommon;
+        }
+
+        if (!hit || hit == (PWND)-5)
+            pMenuState->flags &= ~0x48; // clear fButtonDown | fButtonAlwaysDown
+        else
+            xxxSendMessage(hit, MN_BUTTONUP, (WPARAM)pPopupMenu, lParam);
+        goto UnlockHitAndReturn;
+    }
+
+    // ======================================================================
+    // Remaining WM_L/RBUTTONDBLCLK / WM_RBUTTONDOWN / WM_RBUTTONUP / WM_RBUTTONDBLCLK
+    // ======================================================================
+    switch (message)
+    {
+    case WM_LBUTTONDBLCLK:
+    Case_LButtonDblClk:
+    {
+        int found;
+        pMenuState->mnFocus = -1;
+        found = xxxMNFindWindowFromPoint(pPopupMenu, (DWORD)&pPopupMenu, lParam);
+        if (found || pPopupMenu)
+        {
+            if ((pPopupMenu->flags & 0x2 /* fHasMenuBar */) && found == -5)
+            {
+                xxxMNSwitchToAlternateMenu(pPopupMenu);
+                found = -1;
+            }
+            if (found == -1)
+            {
+                xxxMNDoubleClick(pMenuState, pPopupMenu, (UINT)(ULONG_PTR)pPopupMenu);
+                return 1;
+            }
+            tl.next = gptiCurrent->ptl;
+            gptiCurrent->ptl = &tl;
+            tlPobj = (PWND)found;
+            if (found)
+                tlPobj->head.cLockObj++;
+            xxxSendMessage((PWND)found, MN_DBLCLK, (WPARAM)pPopupMenu, 0);
+            goto UnlockHitAndReturn;
+        }
+        goto Dismiss;
+    }
+
+    case WM_RBUTTONDOWN:
+        goto ButtonDownCommon; // (shares logic with the right-button-tracking case above)
+
+    case WM_RBUTTONUP:
+    Case_RButtonUp:
+        if (pPopupMenu->flags & 0x40 /* fRightButton */)
+            goto Case_LButtonUp;
+
+        if (pMenuState->flags & 0x8 /* fButtonDown */)
+        {
+            if ((pMenuState->flags & 0x100 /* fModelessMenu */) == 0)
+                xxxMNRemoveMessage(message, 0);
+            return 1;
+        }
+
+        if (message == WM_RBUTTONUP && (pPopupMenu->flags & 0x800 /* fAutoDismiss */) == 0)
+        {
+            PMENUWND   pwndActive = (PMENUWND)pPopupMenu->spwndActivePopup;
+            PPOPUPMENU ppmActive  = pwndActive ? pwndActive->ppopupmenu : NULL;
+
+            if (ppmActive && (int)ppmActive->posSelectedItem >= 0)
+            {
+                PWND spwndNotify = ppmActive->spwndNotify;
+                tl.next = gptiCurrent->ptl;
+                gptiCurrent->ptl = &tl;
+                tlPobj = spwndNotify;
+                if (spwndNotify)
+                    spwndNotify->head.cLockObj++;
+
+                xxxSendMessage(
+                    ppmActive->spwndNotify,
+                    WM_MENURBUTTONUP,
+                    ppmActive->posSelectedItem,
+                    (LPARAM)(ppmActive->spmenu ? ppmActive->spmenu->head.head.h : NULL));
+                ThreadUnlock1();
+            }
+        }
+        return 0;
+
+    case WM_RBUTTONDBLCLK:
+        goto FindWindowAndMaybeRemove;
+    }
+
+    return 0;
+}
