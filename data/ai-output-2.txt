@@ -1,0 +1,150 @@
+--- a/win32ss/user/ntuser/menu.c
++++ b/win32ss/user/ntuser/menu.c
+@@
++/**********************************************************************
++ *         IntGetMenuState / IntFreeMenuState
++ *
++ * pti->pMenuState を必要なら確保する/解放するだけの最小限のヘルパー。
++ * Windows 本来の実装(xxxMNAllocMenuState 等)はロックカウントやアニメ
++ * ーション用 DC、入れ子のメニューループ用スタックまで管理しているが、
++ * ここでは MENU_InitTracking〜MENU_ExitTracking の1回のループ分だけ
++ * pGlobalPopupMenu を保持できれば十分なので、その最小実装にとどめる。
++ */
++static PMENUSTATE FASTCALL IntGetMenuState(PTHREADINFO pti, struct _DESKTOP *rpdesk, BOOL bCreate)
++{
++   PMENUSTATE pMenuState = pti->pMenuState;
++
++   if (pMenuState || !bCreate)
++      return pMenuState;
++
++   pMenuState = DesktopHeapAlloc(rpdesk, sizeof(MENUSTATE));
++   if (!pMenuState)
++      return NULL;
++
++   RtlZeroMemory(pMenuState, sizeof(MENUSTATE));
++   pMenuState->ptiMenuStateOwner = pti;
++   pti->pMenuState = pMenuState;
++
++   return pMenuState;
++}
++
++static VOID FASTCALL IntFreeMenuState(PTHREADINFO pti, struct _DESKTOP *rpdesk)
++{
++   PMENUSTATE pMenuState = pti->pMenuState;
++
++   if (!pMenuState)
++      return;
++
++   /* 入れ子ループは未対応なので常に pmnsPrev (NULL) に戻すだけ。 */
++   pti->pMenuState = pMenuState->pmnsPrev;
++   DesktopHeapFree(rpdesk, pMenuState);
++}
++
+ /***********************************************************************
+  *           MENU_InitPopup
+  *   
+  * Popup menu initialization before WM_ENTERMENULOOP.
+  */
+ static BOOL MENU_InitPopup( PWND pWndOwner, PMENU menu, UINT flags )
+@@
+     pWnd = ValidateHwndNoErr( menu->hWnd );
+ 
+     if (!pWnd)
+     {
+        ERR("menu->hWnd bad hwnd %p\n",menu->hWnd);
+        return FALSE;
+     }
+ 
+-    if (!top_popup) {
+-        top_popup = menu->hWnd;
+-        top_popup_hmenu = UserHMGetHandle(menu);
+-    }
++    if (!top_popup) {
++        PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++        PMENUSTATE pMenuState;
++
++        top_popup = menu->hWnd;
++        top_popup_hmenu = UserHMGetHandle(menu);
++
++        /* このループで最初に表示されたポップアップ = "global" popup。
++         * top_popup と同じタイミングで pGlobalPopupMenu も設定し、
++         * MENU_IsMenuActive/MENU_EndMenu/NtUserEndMenu が見ている
++         * pMenuState->pGlobalPopupMenu を実際に有効にする。 */
++        pMenuState = IntGetMenuState(pti, menu->head.rpdesk, TRUE);
++        if (pMenuState)
++        {
++            pMenuState->pGlobalPopupMenu = ((PMENUWND)pWnd)->ppopupmenu;
++        }
++    }
+ 
+     /* Display the window */
+     UserRefObjectCo(pWnd, &Ref);
+@@
+ static BOOL FASTCALL MENU_InitTracking(PWND pWnd, PMENU Menu, BOOL bPopup, UINT wFlags)
+ {
+     HWND capture_win;
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++    PMENUSTATE pMenuState;
+ 
+     TRACE("hwnd=%p hmenu=%p\n", UserHMGetHandle(pWnd), UserHMGetHandle(Menu));
+ 
+     co_UserHideCaret(0);
+ 
+     /* This makes the menus of applications built with Delphi work.
+      * It also enables menus to be displayed in more than one window,
+      * but there are some bugs left that need to be fixed in this case.
+      */
+     if (!bPopup)
+     {
+         Menu->hWnd = UserHMGetHandle(pWnd);
+     }
+ 
+     if (!top_popup) {
+        top_popup = Menu->hWnd;
+        top_popup_hmenu = UserHMGetHandle(Menu);
+     }
+ 
++    /* このスレッドの MENUSTATE を確保(無ければ作る)。pGlobalPopupMenu
++     * 自体は実際のポップアップウィンドウができてから MENU_ShowPopup が
++     * 埋めるので、ここでは fInsideMenuLoop/fIsSysMenu だけ設定する。
++     * (menu bar 自体の追跡開始時にはまだポップアップは存在しない) */
++    pMenuState = IntGetMenuState(pti, Menu->head.rpdesk, TRUE);
++    if (pMenuState)
++    {
++       pMenuState->fInsideMenuLoop = TRUE;
++       pMenuState->fIsSysMenu = IS_SYSTEM_MENU(Menu);
++    }
++
+     fInsideMenuLoop = TRUE;
+     fInEndMenu = FALSE;
+ 
+     /* Send WM_ENTERMENULOOP and WM_INITMENU message only if TPM_NONOTIFY flag is not specified */
+@@
+ static BOOL FASTCALL MENU_ExitTracking(PWND pWnd, BOOL bPopup, UINT wFlags)
+ {
++    PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++
+     TRACE("Exit Track hwnd=%p bPopup %d\n", UserHMGetHandle(pWnd), bPopup);
+ 
+     IntNotifyWinEvent(EVENT_SYSTEM_MENUEND, pWnd, OBJID_WINDOW, CHILDID_SELF, 0);
+ 
+     if (!(wFlags & TPM_NONOTIFY))
+        co_IntSendMessage( UserHMGetHandle(pWnd), WM_EXITMENULOOP, bPopup, 0 );
+ 
+     co_UserShowCaret(0);
+ 
+     top_popup = 0;
+     top_popup_hmenu = NULL;
+ 
++    /* top_popup を破棄するのと対になる後始末。pGlobalPopupMenu が
++     * このループより長生きしてダングリングポインタにならないよう、
++     * MENUSTATE 自体もここで解放する。 */
++    if (pti->pMenuState)
++    {
++       pti->pMenuState->pGlobalPopupMenu = NULL;
++       pti->pMenuState->fInsideMenuLoop  = FALSE;
++       IntFreeMenuState(pti, pWnd->head.rpdesk);
++    }
++
+     return TRUE;
+ }

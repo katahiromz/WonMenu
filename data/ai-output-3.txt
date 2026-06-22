@@ -1,0 +1,221 @@
+--- a/win32ss/user/ntuser/menu.c
++++ b/win32ss/user/ntuser/menu.c
+@@
+-/**********************************************************************
+- *         IntGetMenuState / IntFreeMenuState
+- *
+- * pti->pMenuState を必要なら確保する/解放するだけの最小限のヘルパー。
+- * Windows 本来の実装(xxxMNAllocMenuState 等)はロックカウントやアニメ
+- * ーション用 DC、入れ子のメニューループ用スタックまで管理しているが、
+- * ここでは MENU_InitTracking〜MENU_ExitTracking の1回のループ分だけ
+- * pGlobalPopupMenu を保持できれば十分なので、その最小実装にとどめる。
+- */
+-static PMENUSTATE FASTCALL IntGetMenuState(PTHREADINFO pti, struct _DESKTOP *rpdesk, BOOL bCreate)
+-{
+-   PMENUSTATE pMenuState = pti->pMenuState;
+-
+-   if (pMenuState || !bCreate)
+-      return pMenuState;
+-
+-   pMenuState = DesktopHeapAlloc(rpdesk, sizeof(MENUSTATE));
+-   if (!pMenuState)
+-      return NULL;
+-
+-   RtlZeroMemory(pMenuState, sizeof(MENUSTATE));
+-   pMenuState->ptiMenuStateOwner = pti;
+-   pti->pMenuState = pMenuState;
+-
+-   return pMenuState;
+-}
+-
+-static VOID FASTCALL IntFreeMenuState(PTHREADINFO pti, struct _DESKTOP *rpdesk)
+-{
+-   PMENUSTATE pMenuState = pti->pMenuState;
+-
+-   if (!pMenuState)
+-      return;
+-
+-   /* 入れ子ループは未対応なので常に pmnsPrev (NULL) に戻すだけ。 */
+-   pti->pMenuState = pMenuState->pmnsPrev;
+-   DesktopHeapFree(rpdesk, pMenuState);
+-}
++/**********************************************************************
++ *         IntPushMenuState / IntPopMenuState
++ *
++ * pti->pMenuState はネストしたメニュー追跡(例: 追跡中のメニューの上から
++ * システムメニューが開く、別スレッド由来の再入など)に対応するため
++ * pmnsPrev で繋がるスタックとして扱う。1回の MENU_InitTracking 〜
++ * MENU_ExitTracking の組ごとに必ず Push/Pop し、決して既存の段を
++ * 上書き(再利用)しない。これにより、外側のループの
++ * pGlobalPopupMenu が内側のループによって誤って書き換えられたり、
++ * 早期に解放されたりすることがなくなる。
++ */
++static PMENUSTATE FASTCALL IntPushMenuState(PTHREADINFO pti, struct _DESKTOP *rpdesk)
++{
++   PMENUSTATE pMenuState = DesktopHeapAlloc(rpdesk, sizeof(MENUSTATE));
++
++   if (!pMenuState)
++      return NULL;
++
++   RtlZeroMemory(pMenuState, sizeof(MENUSTATE));
++   pMenuState->ptiMenuStateOwner = pti;
++
++   /* 既存の(外側の)状態を保持したまま、新しい段をスタック先頭に積む。 */
++   pMenuState->pmnsPrev = pti->pMenuState;
++   pti->pMenuState      = pMenuState;
++
++   return pMenuState;
++}
++
++static VOID FASTCALL IntPopMenuState(PTHREADINFO pti, struct _DESKTOP *rpdesk)
++{
++   PMENUSTATE pMenuState = pti->pMenuState;
++
++   if (!pMenuState)
++      return;
++
++   /* スタックの最上段(=今終わったループ)だけを外す。
++    * 下に積まれている外側のループの MENUSTATE には触れない。 */
++   pti->pMenuState = pMenuState->pmnsPrev;
++   DesktopHeapFree(rpdesk, pMenuState);
++}
+@@
+     if (!top_popup) {
+         PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+-        PMENUSTATE pMenuState;
+ 
+         top_popup = menu->hWnd;
+         top_popup_hmenu = UserHMGetHandle(menu);
+ 
+-        /* このループで最初に表示されたポップアップ = "global" popup。
+-         * top_popup と同じタイミングで pGlobalPopupMenu も設定し、
+-         * MENU_IsMenuActive/MENU_EndMenu/NtUserEndMenu が見ている
+-         * pMenuState->pGlobalPopupMenu を実際に有効にする。 */
+-        pMenuState = IntGetMenuState(pti, menu->head.rpdesk, TRUE);
+-        if (pMenuState)
+-        {
+-            pMenuState->pGlobalPopupMenu = ((PMENUWND)pWnd)->ppopupmenu;
+-        }
++        /* このループで最初に表示されたポップアップ = "global" popup。
++         * MENU_InitTracking がこのループ用の MENUSTATE を既にスタック
++         * へ積んでいるはずなので、新たに作らずそのスタック最上段
++         * (= 現在進行中のループの状態)だけに設定する。ネストしていても
++         * 外側のループの pGlobalPopupMenu には影響しない。 */
++        if (pti->pMenuState)
++        {
++            pti->pMenuState->pGlobalPopupMenu = ((PMENUWND)pWnd)->ppopupmenu;
++        }
+     }
+@@
+ static BOOL FASTCALL MENU_InitTracking(PWND pWnd, PMENU Menu, BOOL bPopup, UINT wFlags)
+ {
+     HWND capture_win;
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+     PMENUSTATE pMenuState;
+ 
+     TRACE("hwnd=%p hmenu=%p\n", UserHMGetHandle(pWnd), UserHMGetHandle(Menu));
+@@
+     if (!top_popup) {
+        top_popup = Menu->hWnd;
+        top_popup_hmenu = UserHMGetHandle(Menu);
+     }
+ 
+-    /* このスレッドの MENUSTATE を確保(無ければ作る)。pGlobalPopupMenu
+-     * 自体は実際のポップアップウィンドウができてから MENU_ShowPopup が
+-     * 埋めるので、ここでは fInsideMenuLoop/fIsSysMenu だけ設定する。
+-     * (menu bar 自体の追跡開始時にはまだポップアップは存在しない) */
+-    pMenuState = IntGetMenuState(pti, Menu->head.rpdesk, TRUE);
+-    if (pMenuState)
+-    {
+-       pMenuState->fInsideMenuLoop = TRUE;
+-       pMenuState->fIsSysMenu = IS_SYSTEM_MENU(Menu);
+-    }
++    /* このメニュー追跡ループ専用の MENUSTATE を新たにスタックへ積む。
++     * 既に外側のループが pti->pMenuState を使っていても、それを上書き
++     * せず pmnsPrev として保持するので、外側のループの
++     * pGlobalPopupMenu は影響を受けない。
++     * pGlobalPopupMenu 自体は実際のポップアップウィンドウができてから
++     * MENU_ShowPopup が埋めるので、ここでは fInsideMenuLoop/fIsSysMenu
++     * だけ設定する。 */
++    pMenuState = IntPushMenuState(pti, Menu->head.rpdesk);
++    if (pMenuState)
++    {
++       pMenuState->fInsideMenuLoop = TRUE;
++       pMenuState->fIsSysMenu = IS_SYSTEM_MENU(Menu);
++    }
++    else
++    {
++       ERR("Failed to allocate MENUSTATE, pGlobalPopupMenu won't be tracked for this loop\n");
++    }
+ 
+     fInsideMenuLoop = TRUE;
+     fInEndMenu = FALSE;
+@@
+ static BOOL FASTCALL MENU_ExitTracking(PWND pWnd, BOOL bPopup, UINT wFlags)
+ {
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+ 
+     TRACE("Exit Track hwnd=%p bPopup %d\n", UserHMGetHandle(pWnd), bPopup);
+@@
+     top_popup = 0;
+     top_popup_hmenu = NULL;
+ 
+-    /* top_popup を破棄するのと対になる後始末。pGlobalPopupMenu が
+-     * このループより長生きしてダングリングポインタにならないよう、
+-     * MENUSTATE 自体もここで解放する。 */
+-    if (pti->pMenuState)
+-    {
+-       pti->pMenuState->pGlobalPopupMenu = NULL;
+-       pti->pMenuState->fInsideMenuLoop  = FALSE;
+-       IntFreeMenuState(pti, pWnd->head.rpdesk);
+-    }
++    /* top_popup を破棄するのと対になる後始末。このループ(=スタック
++     * 最上段)だけを Pop して、外側のループ(あれば)の MENUSTATE は
++     * そのまま残す。pGlobalPopupMenu は解放前に必ずクリアしておき、
++     * MENUSTATE 自体が指すどこかからダングリングする余地を残さない。 */
++    if (pti->pMenuState)
++    {
++       pti->pMenuState->pGlobalPopupMenu = NULL;
++       pti->pMenuState->fInsideMenuLoop  = FALSE;
++       IntPopMenuState(pti, pWnd->head.rpdesk);
++    }
+ 
+     return TRUE;
+ }
+@@
+     case WM_DESTROY:
+       /* zero out global pointer in case resident popup window was destroyed. */
+       if (pPopupMenu)
+       {
++         PTHREADINFO ptiWnd = Wnd->head.pti;
++         PMENUSTATE  pMenuState;
++
+          if (UserHMGetHandle(Wnd) == top_popup)
+          {
+              top_popup = NULL;
+              top_popup_hmenu = NULL;
+          }
++
++         /* MENU_ExitTracking を経由しない異常な破棄(強制 DestroyWindow、
++          * エラーパスでの早期 return など)でも、これから解放される
++          * POPUPMENU を pGlobalPopupMenu が指したままダングリングしない
++          * よう、ネストしている全段の MENUSTATE を辿って確認・クリア
++          * する。先頭(現在のループ)だけでなく pmnsPrev も見るのは、
++          * 外側のループが一時停止中にこのポップアップを参照したまま
++          * になっているケースに対応するため。 */
++         for (pMenuState = ptiWnd ? ptiWnd->pMenuState : NULL;
++              pMenuState;
++              pMenuState = pMenuState->pmnsPrev)
++         {
++             if (pMenuState->pGlobalPopupMenu == pPopupMenu)
++             {
++                pMenuState->pGlobalPopupMenu = NULL;
++                break;
++             }
++         }
+       }
+       else
+       {
+          ERR("No Window Pop Up!\n");
+       }
+       break;

@@ -1,0 +1,307 @@
+@@
+ static BOOL FASTCALL MENU_InitTracking(PWND pWnd, PMENU Menu, BOOL bPopup, UINT wFlags)
+ {
+     HWND capture_win;
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+     PMENUSTATE pMenuState;
+ 
+     TRACE("hwnd=%p hmenu=%p\n", UserHMGetHandle(pWnd), UserHMGetHandle(Menu));
+ 
+     co_UserHideCaret(0);
+@@
+     if (!bPopup)
+     {
+         Menu->hWnd = UserHMGetHandle(pWnd);
+     }
+ 
+-    if (!top_popup) {
+-       top_popup = Menu->hWnd;
+-       top_popup_hmenu = UserHMGetHandle(Menu);
+-    }
+-
+-    pMenuState = IntPushMenuState(pti, Menu->head.rpdesk);
+-    if (pMenuState)
+-    {
+-       pMenuState->fInsideMenuLoop = TRUE;
+-       pMenuState->fIsSysMenu = IS_SYSTEM_MENU(Menu);
+-    }
+-    else
+-    {
+-       ERR("Failed to allocate MENUSTATE, pGlobalPopupMenu won't be tracked for this loop\n");
+-    }
+-
+-    fInsideMenuLoop = TRUE;
+-    fInEndMenu = FALSE;
++    /* fInsideMenuLoop/fInEndMenu はもう top_popup と同じグローバル
++     * static ではなく、すべて新しく積む MENUSTATE 経由で管理する。 */
++    pMenuState = IntPushMenuState(pti, Menu->head.rpdesk);
++    if (!pMenuState)
++    {
++       ERR("Failed to allocate MENUSTATE\n");
++       return FALSE;
++    }
++
++    pMenuState->fInsideMenuLoop = TRUE;
++    pMenuState->fInEndMenu      = FALSE;
++    pMenuState->fIsSysMenu      = IS_SYSTEM_MENU(Menu);
+ 
+     /* Send WM_ENTERMENULOOP and WM_INITMENU message only if TPM_NONOTIFY flag is not specified */
+...
+@@
+ static BOOL FASTCALL MENU_ExitTracking(PWND pWnd, BOOL bPopup, UINT wFlags)
+ {
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+ 
+     TRACE("Exit Track hwnd=%p bPopup %d\n", UserHMGetHandle(pWnd), bPopup);
+@@
+     co_UserShowCaret(0);
+ 
+-    top_popup = 0;
+-    top_popup_hmenu = NULL;
+-
+     if (pti->pMenuState)
+     {
+        pti->pMenuState->pGlobalPopupMenu = NULL;
+        pti->pMenuState->fInsideMenuLoop  = FALSE;
+        IntPopMenuState(pti, pWnd->head.rpdesk);
+     }
+ 
+     return TRUE;
+ }
+...
+@@
+     pWnd = ValidateHwndNoErr( menu->hWnd );
+ 
+     if (!pWnd)
+     {
+        ERR("menu->hWnd bad hwnd %p\n",menu->hWnd);
+        return FALSE;
+     }
+ 
+-    if (!top_popup) {
+-        PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+-        PMENUSTATE pMenuState;
+-
+-        top_popup = menu->hWnd;
+-        top_popup_hmenu = UserHMGetHandle(menu);
+-
+-        pMenuState = IntGetMenuState(pti, menu->head.rpdesk, TRUE);
+-        if (pMenuState)
+-        {
+-            pMenuState->pGlobalPopupMenu = ((PMENUWND)pWnd)->ppopupmenu;
+-        }
+-    }
++    {
++        PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++
++        /* このループで最初に表示されたポップアップ = "global" popup。
++         * 旧 "if (!top_popup)" の代わりに pGlobalPopupMenu の有無で
++         * 判定する。MENU_InitTracking が既に MENUSTATE を積んでいる
++         * はずなので、ここでは取得するだけで作らない。 */
++        if (pti->pMenuState && !pti->pMenuState->pGlobalPopupMenu)
++        {
++            pti->pMenuState->pGlobalPopupMenu = ((PMENUWND)pWnd)->ppopupmenu;
++        }
++    }
+...
+@@
+     if (menu->fFlags & MNF_POPUP)
+        hdc = UserGetDCEx(pWnd, 0, DCX_USESTYLE);
+     else
+        hdc = UserGetDCEx(pWnd, 0, DCX_CACHE | DCX_WINDOW);
+ 
+-    if (!top_popup) {
+-        top_popup = menu->hWnd;                  //pPopupMenu->spwndActivePopup or
+-                                                 //pPopupMenu->fIsTrackPopup set pPopupMenu->spwndPopupMenu;
+-        top_popup_hmenu = UserHMGetHandle(menu); //pPopupMenu->spmenu
+-    }
++    if (menu->fFlags & MNF_POPUP)
++    {
++        /* menu->hWnd がメニューバー本体のウィンドウである場合
++         * ((PMENUWND)pWnd)->ppopupmenu は無効なキャストになるので、
++         * 本物のポップアップ(MNF_POPUP)の場合だけ設定する。 */
++        PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++
++        if (pti->pMenuState && !pti->pMenuState->pGlobalPopupMenu)
++        {
++            pti->pMenuState->pGlobalPopupMenu = ((PMENUWND)pWnd)->ppopupmenu;
++        }
++    }
+...
+@@
+ static void FASTCALL MENU_HideSubPopups(PWND pWndOwner, PMENU Menu,
+                                BOOL SendMenuSelect, UINT wFlags)
+ {
+-  TRACE("owner=%x menu=%x 0x%04x\n", pWndOwner, Menu, SendMenuSelect);
++  PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++
++  TRACE("owner=%x menu=%x 0x%04x\n", pWndOwner, Menu, SendMenuSelect);
+ 
+-  if ( Menu && top_popup )
++  if ( Menu && pti->pMenuState && pti->pMenuState->pGlobalPopupMenu )
+   {
+       PITEM Item;
+@@
+           MENU_HideSubPopups(pWndOwner, Item->spSubMenu, FALSE, wFlags);
+           MENU_SelectItem(pWndOwner, Item->spSubMenu, NO_SELECTED_ITEM, SendMenuSelect, NULL);
+-          TRACE("M_HSP top p hm %p  pWndOwner IDMenu %p\n",top_popup_hmenu,pWndOwner->IDMenu);
++          TRACE("M_HSP top p hm %p  pWndOwner IDMenu %p\n",
++                pti->pMenuState->pGlobalPopupMenu->spmenu
++                    ? UserHMGetHandle(pti->pMenuState->pGlobalPopupMenu->spmenu)
++                    : NULL,
++                pWndOwner->IDMenu);
+           pWnd = ValidateHwndNoErr(Item->spSubMenu->hWnd);
+...
+@@
+    kmbi.hMenu = hMenu;
+-   kmbi.fBarFocused = top_popup_hmenu == hMenu;
+-   TRACE("GMBI: top p hm %p hMenu %p\n",top_popup_hmenu, hMenu);
++   {
++      /* GetMenuBarInfo は別スレッド/別プロセスからも呼べるため、
++       * 呼び出し側ではなく対象ウィンドウ(pWnd)を実際に追跡している
++       * スレッドの pGlobalPopupMenu を見て判定する。 */
++      PTHREADINFO ptiWnd = pWnd->head.pti;
++      PMENUSTATE  pMenuState;
++      BOOL fBarFocused = FALSE;
++
++      for (pMenuState = ptiWnd ? ptiWnd->pMenuState : NULL;
++           pMenuState;
++           pMenuState = pMenuState->pmnsPrev)
++      {
++          if (pMenuState->pGlobalPopupMenu &&
++              pMenuState->pGlobalPopupMenu->spmenu == Menu)
++          {
++              fBarFocused = TRUE;
++              break;
++          }
++      }
++
++      kmbi.fBarFocused = fBarFocused;
++      TRACE("GMBI: pGlobalPopupMenu match %d hMenu %p\n", fBarFocused, hMenu);
++   }
+...
+@@
+     case WM_DESTROY:
+       /* zero out global pointer in case resident popup window was destroyed. */
+       if (pPopupMenu)
+       {
+          PTHREADINFO ptiWnd = Wnd->head.pti;
+          PMENUSTATE  pMenuState;
+ 
+-         if (UserHMGetHandle(Wnd) == top_popup)
+-         {
+-             top_popup = NULL;
+-             top_popup_hmenu = NULL;
+-         }
+-
+          for (pMenuState = ptiWnd ? ptiWnd->pMenuState : NULL;
+               pMenuState;
+               pMenuState = pMenuState->pmnsPrev)
+          {
+              if (pMenuState->pGlobalPopupMenu == pPopupMenu)
+              {
+                 pMenuState->pGlobalPopupMenu = NULL;
+                 break;
+              }
+          }
+       }
+       else
+       {
+          ERR("No Window Pop Up!\n");
+       }
+       break;
+...
+PWND MENU_IsMenuActive(VOID)
+ {
+    PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+ 
+-   if (pti->pMenuState && pti->pMenuState->pGlobalPopupMenu)
+-   {
+-      return IntGetMSWND(pti->pMenuState);
+-   }
+-
+-   return ValidateHwndNoErr(top_popup);
++   if (!pti->pMenuState)
++      return NULL;
++
++   return IntGetMSWND(pti->pMenuState);
+ }
+ 
+ void MENU_EndMenu( PWND pwnd )
+ {
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+     PMENU menu = NULL;
+-    HWND hwndPopup = top_popup;
++    HWND hwndPopup = NULL;
+ 
+     if (pti->pMenuState && pti->pMenuState->pGlobalPopupMenu)
+     {
+        PWND pwndPopup = IntGetMSWND(pti->pMenuState);
+        menu = pti->pMenuState->pGlobalPopupMenu->spmenu;
+        hwndPopup = pwndPopup ? UserHMGetHandle(pwndPopup) : NULL;
+     }
+-    else
+-    {
+-       menu = UserGetMenuObject(top_popup_hmenu);
+-    }
+ 
+     if ( menu && ( UserHMGetHandle(pwnd) == menu->hWnd || pwnd == menu->spwndNotify ) )
+     {
+-       if (fInsideMenuLoop && hwndPopup)
++       if (pti->pMenuState->fInsideMenuLoop && hwndPopup)
+        {
+-          fInsideMenuLoop = FALSE;
++          pti->pMenuState->fInsideMenuLoop = FALSE;
+ 
+-          if (fInEndMenu)
++          if (pti->pMenuState->fInEndMenu)
+           {
+              ERR("Already in End loop\n");
+              return;
+           }
+ 
+-          fInEndMenu = TRUE;
++          pti->pMenuState->fInEndMenu = TRUE;
+           UserPostMessage( hwndPopup, WM_CANCELMODE, 0, 0);
+        }
+     }
+ }
+...
+ BOOL APIENTRY
+ NtUserEndMenu(VOID)
+ {
+    PWND pWnd;
+    TRACE("Enter NtUserEndMenu\n");
+    UserEnterExclusive();
+    if ( gptiCurrent->pMenuState &&
+         gptiCurrent->pMenuState->pGlobalPopupMenu )
+    {
+        pWnd = IntGetMSWND(gptiCurrent->pMenuState);
+        if (pWnd)
+        {
+           UserPostMessage( UserHMGetHandle(pWnd), WM_CANCELMODE, 0, 0);
+        }
+        else
+           gptiCurrent->pMenuState->fInsideMenuLoop = FALSE;
+    }
+-   else if (fInsideMenuLoop && top_popup)
+-   {
+-      fInsideMenuLoop = FALSE;
+-      UserPostMessage( top_popup, WM_CANCELMODE, 0, 0);
+-   }
+    UserLeave();
+    TRACE("Leave NtUserEndMenu\n");
+    return TRUE;
+ }
+...
+-/* Use global popup window because there's no way 2 menus can
+- * be tracked at the same time.  */
+-static HWND top_popup = NULL;
+-static HMENU top_popup_hmenu = NULL;
+-
+-BOOL fInsideMenuLoop = FALSE;
+-BOOL fInEndMenu = FALSE;
++/* top_popup/top_popup_hmenu/fInsideMenuLoop/fInEndMenu は廃止。
++ * いずれも pti->pMenuState (PMENUSTATE) 経由でスレッド単位に
++ * 管理するようになった。 */
+...

@@ -1,0 +1,135 @@
+--- a/win32ss/user/ntuser/menu.c
++++ b/win32ss/user/ntuser/menu.c
+@@
+     PWND pWnd;
+     PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++    PMENUSTATE pMenuState = pti->pMenuState;
++
++    if (!pMenuState)
++    {
++       /* MENU_InitTracking が必ず先に呼ばれ、このスレッド用の
++        * MENUSTATE をスタックへ積んでいるはず。無い場合は
++        * 呼び出し順序の異常か確保失敗なので、ここで諦める。 */
++       ERR("MENU_TrackMenu: no MENUSTATE for this thread!\n");
++       return 0;
++    }
+ 
+     if (pti != pwnd->head.pti)
+     {
+        ERR("Not the same PTI!!!!\n");
+     }
+@@
+     if (wFlags & TPM_BUTTONDOWN)
+     {
+         /* Get the result in order to start the tracking or not */
+         fRemove = MENU_ButtonDown( &mt, pmenu, wFlags );
+-        fInsideMenuLoop = fRemove;
++        pMenuState->fInsideMenuLoop = fRemove;
+     }
+ 
+-    if (wFlags & TF_ENDMENU) fInsideMenuLoop = FALSE;
++    if (wFlags & TF_ENDMENU) pMenuState->fInsideMenuLoop = FALSE;
+@@
+     capture_win = IntGetCapture();
+ 
+-    while (fInsideMenuLoop)
++    while (pMenuState->fInsideMenuLoop)
+     {
+@@
+         /* check if EndMenu() tried to cancel us, by posting this message */
+         if (msg.message == WM_CANCELMODE)
+         {
+             /* we are now out of the loop */
+-            fInsideMenuLoop = FALSE;
++            pMenuState->fInsideMenuLoop = FALSE;
+ 
+             /* remove the message from the queue */
+             co_IntGetPeekMessage( &msg, 0, msg.message, msg.message, PM_REMOVE, FALSE );
+@@
+                 case WM_RBUTTONDBLCLK:
+                 case WM_RBUTTONDOWN:
+                      if (!(wFlags & TPM_RIGHTBUTTON))
+                      {
+-                        if ( msg.message == WM_RBUTTONDBLCLK ) fInsideMenuLoop = FALSE; // Must exit or loop forever!
++                        if ( msg.message == WM_RBUTTONDBLCLK ) pMenuState->fInsideMenuLoop = FALSE; // Must exit or loop forever!
+                         break;
+                      }
+@@
+                     fInsideMenuLoop = fRemove;
+                     if (msg.message == WM_RBUTTONDBLCLK)
+-                        fInsideMenuLoop = FALSE; // Must exit or loop forever
++                        pMenuState->fInsideMenuLoop = FALSE; // Must exit or loop forever
+                     break;
+                 }
++                /* (上の fRemove 代入行も同様に書き換え) */
+@@
+                         if (!firstClick && GetNCHitEx(pWnd, mt.Pt) == HTSYSMENU)
+                         {
+                             fRemove = TRUE;
+-                            fInsideMenuLoop = FALSE;
++                            pMenuState->fInsideMenuLoop = FALSE;
+                         }
+                         else
+                         {
+                             /* End the loop if executedMenuId is an item ID */
+                             /* or if the job was done (executedMenuId = 0). */
+                             executedMenuId = MENU_ButtonUp( &mt, pmMouse, wFlags);
+                             fRemove = (executedMenuId != -1);
+-                            fInsideMenuLoop = !fRemove;
++                            pMenuState->fInsideMenuLoop = !fRemove;
+                             firstClick = FALSE;
+                         }
+                     }
+                     /* No menu was selected by the mouse */
+                     /* if the function was called by TrackPopupMenu, continue
+                        with the menu tracking. If not, stop it */
+                     else
+-                        fInsideMenuLoop = ((wFlags & TPM_POPUPMENU) ? TRUE : FALSE);
++                        pMenuState->fInsideMenuLoop = ((wFlags & TPM_POPUPMENU) ? TRUE : FALSE);
+ 
+                     break;
+ 
+                 case WM_MOUSEMOVE:
+                     /* the selected menu item must be changed every time */
+                     /* the mouse moves. */
+ 
+                     if (pmMouse)
+-                        fInsideMenuLoop |= MENU_MouseMove( &mt, pmMouse, wFlags );
++                        pMenuState->fInsideMenuLoop |= MENU_MouseMove( &mt, pmMouse, wFlags );
+@@
+                     case VK_MENU:
+                     case VK_F10:
+-                        fInsideMenuLoop = FALSE;
++                        pMenuState->fInsideMenuLoop = FALSE;
+                         break;
+@@
+                     case VK_ESCAPE:
+-                        fInsideMenuLoop = !MENU_KeyEscape(&mt, wFlags);
++                        pMenuState->fInsideMenuLoop = !MENU_KeyEscape(&mt, wFlags);
+                         break;
+@@
+                     if (msg.wParam == L'\r' || msg.wParam == L' ')
+                     {
+                         executedMenuId = MENU_ExecFocusedItem(&mt, mt.CurrentMenu, wFlags);
+                         fEndMenu = (executedMenuId != -2);
+-                        fInsideMenuLoop = !fEndMenu;
++                        pMenuState->fInsideMenuLoop = !fEndMenu;
+                         break;
+                     }
+@@
+                     pos = MENU_FindItemByKey(mt.OwnerWnd, mt.CurrentMenu, LOWORD(msg.wParam), FALSE);
+ 
+-                    if (pos == (UINT)-2) fInsideMenuLoop = FALSE;
++                    if (pos == (UINT)-2) pMenuState->fInsideMenuLoop = FALSE;
+                     else if (pos == (UINT)-1) UserPostMessage(hwndSAS, WM_LOGONNOTIFY, LN_MESSAGE_BEEP, 0); //MessageBeep(0);
+                     else
+                     {
+                         MENU_SelectItem(mt.OwnerWnd, mt.CurrentMenu, pos, TRUE, 0);
+                         executedMenuId = MENU_ExecFocusedItem(&mt, mt.CurrentMenu, wFlags);
+                         fEndMenu = (executedMenuId != -2);
+-                        fInsideMenuLoop = !fEndMenu;
++                        pMenuState->fInsideMenuLoop = !fEndMenu;
+                     }
+@@
+-        if (fInsideMenuLoop) fRemove = TRUE;
++        if (pMenuState->fInsideMenuLoop) fRemove = TRUE;

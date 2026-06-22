@@ -1,1 +1,27 @@
 xxxInternalGetMessage --> co_IntGetPeekMessage
+
+EnterCrit(); --> UserEnterExclusive();
+UserLeave(); --> UserLeave();
+EnterSharedCrit() --> UserEnterShared();
+
+```
+  TL tl;
+  ...
+  tl.next = gptiCurrent->ptl;
+  gptiCurrent->ptl = &tl;
+  tl.pobj = pObj;
+  if ( pObj )
+    ++pObj->head.cLockObj;
+  ...
+  ThreadUnlock1();
+```
+-->
+```
+USER_REFERENCE_ENTRY Ref;
+...
+if (pObj)
+    UserRefObjectCo(pObj, &Ref);
+...
+if (pObj)
+    UserDerefObjectCo(pObj);
+```

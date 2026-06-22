@@ -1,0 +1,128 @@
+--- a/win32ss/user/ntuser/menu.c
++++ b/win32ss/user/ntuser/menu.c
+@@
+ /**********************************************************************
++ *         IntGetMSWND
++ *
++ * MENUSTATE::pGlobalPopupMenu を尊重してアクティブなポップアップウィンドウを
++ * 返す。プロセス全体で1つしかない static HWND (top_popup) ではなく、
++ * スレッド単位の pMenuState から取得することで、複数の desktop/thread で
++ * メニューループが同時に走るケースでも正しく動作する。
++ */
++static PWND FASTCALL IntGetMSWND(PMENUSTATE pMenuState)
++{
++   PPOPUPMENU pPopupMenu;
++
++   if (!pMenuState || !pMenuState->pGlobalPopupMenu)
++      return NULL;
++
++   pPopupMenu = pMenuState->pGlobalPopupMenu;
++
++   if (pMenuState->fInsideMenuLoop)
++      return pPopupMenu->spwndPopupMenu;
++
++   if (pPopupMenu->spwndNextPopup)
++      return pPopupMenu->spwndNextPopup;
++
++   return pPopupMenu->spwndActivePopup;
++}
++
++/**********************************************************************
+  *         MENU_IsMenuActive
+  */
+ PWND MENU_IsMenuActive(VOID)
+ {
+-   return ValidateHwndNoErr(top_popup);
++   PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++
++   /* pGlobalPopupMenu があればそれを優先する。未設定なら旧来の
++    * top_popup にフォールバック(現状この .c では誰も
++    * pMenuState->pGlobalPopupMenu を設定していないため)。 */
++   if (pti->pMenuState && pti->pMenuState->pGlobalPopupMenu)
++   {
++      return IntGetMSWND(pti->pMenuState);
++   }
++
++   return ValidateHwndNoErr(top_popup);
+ }
+ 
+ /**********************************************************************
+  *         MENU_EndMenu
+  *
+  * Calls EndMenu() if the hwnd parameter belongs to the menu owner
+  *
+  * Does the (menu stuff) of the default window handling of WM_CANCELMODE
+  */
+ void MENU_EndMenu( PWND pwnd )
+ {
+-    PMENU menu = NULL;
+-    menu = UserGetMenuObject(top_popup_hmenu);
++    PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
++    PMENU menu = NULL;
++    HWND hwndPopup = top_popup;
++
++    if (pti->pMenuState && pti->pMenuState->pGlobalPopupMenu)
++    {
++       /* pGlobalPopupMenu を尊重: top_popup_hmenu/top_popup ではなく
++        * このスレッドの MENUSTATE から取得する。 */
++       PWND pwndPopup = IntGetMSWND(pti->pMenuState);
++       menu = pti->pMenuState->pGlobalPopupMenu->spmenu;
++       hwndPopup = pwndPopup ? UserHMGetHandle(pwndPopup) : NULL;
++    }
++    else
++    {
++       menu = UserGetMenuObject(top_popup_hmenu);
++    }
++
+     if ( menu && ( UserHMGetHandle(pwnd) == menu->hWnd || pwnd == menu->spwndNotify ) )
+     {
+-       if (fInsideMenuLoop && top_popup)
++       if (fInsideMenuLoop && hwndPopup)
+        {
+           fInsideMenuLoop = FALSE;
+ 
+           if (fInEndMenu)
+           {
+              ERR("Already in End loop\n");
+              return;
+           }
+ 
+           fInEndMenu = TRUE;
+-          UserPostMessage( top_popup, WM_CANCELMODE, 0, 0);
++          UserPostMessage( hwndPopup, WM_CANCELMODE, 0, 0);
+        }
+     }
+ }
+@@
+ BOOL APIENTRY
+ NtUserEndMenu(VOID)
+ {
+-   //PWND pWnd;
++   PWND pWnd;
+    TRACE("Enter NtUserEndMenu\n");
+    UserEnterExclusive();
+- /*  if ( gptiCurrent->pMenuState &&
++   if ( gptiCurrent->pMenuState &&
+         gptiCurrent->pMenuState->pGlobalPopupMenu )
+    {
++       /* pGlobalPopupMenu を尊重する正規ルート。 */
+        pWnd = IntGetMSWND(gptiCurrent->pMenuState);
+        if (pWnd)
+        {
+           UserPostMessage( UserHMGetHandle(pWnd), WM_CANCELMODE, 0, 0);
+        }
+        else
+           gptiCurrent->pMenuState->fInsideMenuLoop = FALSE;
+-   }*/
+-   if (fInsideMenuLoop && top_popup)
++   }
++   else if (fInsideMenuLoop && top_popup)
+    {
+       fInsideMenuLoop = FALSE;
+       UserPostMessage( top_popup, WM_CANCELMODE, 0, 0);
+    }
+    UserLeave();
+    TRACE("Leave NtUserEndMenu\n");
+    return TRUE;
+ }
+ 
