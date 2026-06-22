@@ -2748,3 +2748,9 @@ void __stdcall MNFreePopup(PPOPUPMENU pPopupMenu)
   else
     ExFreePoolWithTag(pPopupMenu, 0);
 }
+
+static BOOL IsInsideMenuLoop(PTHREADINFO pti)
+{
+    PMENUSTATE pMenuState = pti->pMenuState;
+    return pMenuState && (pMenuState->flags & 4) != 0;
+}
