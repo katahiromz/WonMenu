@@ -2752,5 +2752,5 @@ void __stdcall MNFreePopup(PPOPUPMENU pPopupMenu)
 static BOOL IsInsideMenuLoop(PTHREADINFO pti)
 {
     PMENUSTATE pMenuState = pti->pMenuState;
-    return pMenuState && (pMenuState->flags & 4) != 0;
+    return pMenuState && pMenuState->fInsideMenuLoop;
 }
